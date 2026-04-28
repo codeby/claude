@@ -26,6 +26,8 @@ st.set_page_config(page_title="YouTube Парсер", page_icon="🎬", layout="
 
 
 CONFIG_PATH = Path.home() / ".youtube_parser_config.json"
+SECRETS_PATH = Path(".streamlit") / "secrets.toml"
+SECRETS_KEY = "YOUTUBE_API_KEY"
 
 
 def _load_saved_key() -> str:
@@ -38,6 +40,49 @@ def _load_saved_key() -> str:
     return ""
 
 
+def _upsert_secrets_toml(api_key: str) -> None:
+    """Add or replace YOUTUBE_API_KEY in .streamlit/secrets.toml, keeping other lines."""
+    SECRETS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    line = f'{SECRETS_KEY} = "{api_key}"'
+
+    if SECRETS_PATH.exists():
+        existing = SECRETS_PATH.read_text(encoding="utf-8").splitlines()
+        replaced = False
+        new_lines: list[str] = []
+        for ln in existing:
+            stripped = ln.lstrip()
+            if stripped.startswith(f"{SECRETS_KEY}=") or stripped.startswith(f"{SECRETS_KEY} ="):
+                new_lines.append(line)
+                replaced = True
+            else:
+                new_lines.append(ln)
+        if not replaced:
+            new_lines.append(line)
+        SECRETS_PATH.write_text("\n".join(new_lines).rstrip() + "\n", encoding="utf-8")
+    else:
+        SECRETS_PATH.write_text(line + "\n", encoding="utf-8")
+
+    try:
+        os.chmod(SECRETS_PATH, 0o600)
+    except OSError:
+        pass
+
+
+def _remove_from_secrets_toml() -> None:
+    if not SECRETS_PATH.exists():
+        return
+    existing = SECRETS_PATH.read_text(encoding="utf-8").splitlines()
+    new_lines = [
+        ln for ln in existing
+        if not (ln.lstrip().startswith(f"{SECRETS_KEY}=")
+                or ln.lstrip().startswith(f"{SECRETS_KEY} ="))
+    ]
+    if new_lines and any(ln.strip() for ln in new_lines):
+        SECRETS_PATH.write_text("\n".join(new_lines).rstrip() + "\n", encoding="utf-8")
+    else:
+        SECRETS_PATH.unlink()
+
+
 def _save_key(api_key: str) -> None:
     CONFIG_PATH.write_text(
         json.dumps({"api_key": api_key}, ensure_ascii=False), encoding="utf-8"
@@ -46,11 +91,13 @@ def _save_key(api_key: str) -> None:
         os.chmod(CONFIG_PATH, 0o600)
     except OSError:
         pass
+    _upsert_secrets_toml(api_key)
 
 
 def _delete_saved_key() -> None:
     if CONFIG_PATH.exists():
         CONFIG_PATH.unlink()
+    _remove_from_secrets_toml()
 
 
 def _default_api_key() -> str:
@@ -110,8 +157,13 @@ with st.sidebar:
             st.success("Ключ удалён")
             st.rerun()
 
+    saved_locations: list[str] = []
     if CONFIG_PATH.exists():
-        st.caption(f"💾 Ключ сохранён в `{CONFIG_PATH}`")
+        saved_locations.append(f"`{CONFIG_PATH}`")
+    if SECRETS_PATH.exists() and SECRETS_KEY in SECRETS_PATH.read_text(encoding="utf-8"):
+        saved_locations.append(f"`{SECRETS_PATH}`")
+    if saved_locations:
+        st.caption("💾 Ключ сохранён в: " + ", ".join(saved_locations))
     else:
         st.caption("Ключ не сохранён — нужно вводить каждый раз")
 
