@@ -5,6 +5,8 @@ Returns a result dict with status info so the UI can distinguish between
 """
 from __future__ import annotations
 
+from typing import Any
+
 from youtube_transcript_api import (
     AgeRestricted,
     IpBlocked,
@@ -19,7 +21,9 @@ from youtube_transcript_api import (
 
 
 def fetch_transcript(
-    video_id: str, languages: list[str] | None = None
+    video_id: str,
+    languages: list[str] | None = None,
+    proxy_config: Any | None = None,
 ) -> dict | None:
     """Return transcript info, or None if the video has no usable transcript.
 
@@ -29,7 +33,9 @@ def fetch_transcript(
     on access errors (with `error` key set in the dict if you call
     fetch_transcript_verbose).
     """
-    result = fetch_transcript_verbose(video_id, languages=languages)
+    result = fetch_transcript_verbose(
+        video_id, languages=languages, proxy_config=proxy_config
+    )
     if result.get("error"):
         return None
     if not result.get("segments"):
@@ -38,7 +44,9 @@ def fetch_transcript(
 
 
 def fetch_transcript_verbose(
-    video_id: str, languages: list[str] | None = None
+    video_id: str,
+    languages: list[str] | None = None,
+    proxy_config: Any | None = None,
 ) -> dict:
     """Same as fetch_transcript but always returns a dict with status info.
 
@@ -50,7 +58,7 @@ def fetch_transcript_verbose(
       error:    None | "disabled" | "not_found" | "blocked" | "unavailable" | str
     """
     preferred = languages or ["ru", "en"]
-    api = YouTubeTranscriptApi()
+    api = YouTubeTranscriptApi(proxy_config=proxy_config) if proxy_config else YouTubeTranscriptApi()
 
     try:
         transcript_list = api.list(video_id)

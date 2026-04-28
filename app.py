@@ -112,6 +112,39 @@ def _default_api_key() -> str:
     return _load_saved_key()
 
 
+def _secret(name: str, default: str = "") -> str:
+    try:
+        if name in st.secrets:
+            return str(st.secrets[name])
+    except Exception:
+        pass
+    return os.environ.get(name, default)
+
+
+def _build_proxy_config(provider: str, fields: dict[str, str]):
+    """Build a proxy_config object for youtube-transcript-api 1.x.
+
+    Returns None for "Без прокси" or when required fields are missing.
+    """
+    if provider == "Webshare":
+        from youtube_transcript_api.proxies import WebshareProxyConfig
+
+        username = fields.get("ws_user", "").strip()
+        password = fields.get("ws_pass", "").strip()
+        if not username or not password:
+            return None
+        return WebshareProxyConfig(proxy_username=username, proxy_password=password)
+    if provider == "HTTP-прокси":
+        from youtube_transcript_api.proxies import GenericProxyConfig
+
+        http_url = fields.get("http_url", "").strip() or None
+        https_url = fields.get("https_url", "").strip() or http_url
+        if not http_url and not https_url:
+            return None
+        return GenericProxyConfig(http_url=http_url, https_url=https_url)
+    return None
+
+
 if "api_key" not in st.session_state:
     st.session_state.api_key = _default_api_key()
 if "last_run" not in st.session_state:
@@ -187,6 +220,47 @@ with st.sidebar:
     transcript_langs = st.text_input(
         "Предпочитаемые языки (через запятую)", value="ru,en"
     )
+
+    with st.expander("🌐 Прокси для транскриптов", expanded=False):
+        st.caption(
+            "На Streamlit Cloud / других хостингах YouTube блокирует "
+            "запросы за субтитрами. Используй прокси."
+        )
+        proxy_provider = st.radio(
+            "Провайдер",
+            ("Без прокси", "Webshare", "HTTP-прокси"),
+            horizontal=False,
+        )
+        proxy_fields: dict[str, str] = {}
+        if proxy_provider == "Webshare":
+            proxy_fields["ws_user"] = st.text_input(
+                "Webshare username",
+                value=_secret("WEBSHARE_USERNAME"),
+                key="ws_user",
+            )
+            proxy_fields["ws_pass"] = st.text_input(
+                "Webshare password",
+                value=_secret("WEBSHARE_PASSWORD"),
+                type="password",
+                key="ws_pass",
+            )
+            st.caption(
+                "Купи Residential-пакет на webshare.io → "
+                "Dashboard → Proxy Settings → Username/Password."
+            )
+        elif proxy_provider == "HTTP-прокси":
+            proxy_fields["http_url"] = st.text_input(
+                "HTTP URL",
+                value=_secret("PROXY_HTTP_URL"),
+                placeholder="http://user:pass@host:port",
+                key="http_url",
+            )
+            proxy_fields["https_url"] = st.text_input(
+                "HTTPS URL (можно оставить пустым)",
+                value=_secret("PROXY_HTTPS_URL"),
+                placeholder="http://user:pass@host:port",
+                key="https_url",
+            )
 
     st.subheader("Лимиты")
     search_max = st.number_input(
@@ -266,6 +340,18 @@ if run_clicked:
         "youtube", "v3", developerKey=st.session_state.api_key, cache_discovery=False
     )
 
+    proxy_config = None
+    if fetch_transcripts_flag and proxy_provider != "Без прокси":
+        try:
+            proxy_config = _build_proxy_config(proxy_provider, proxy_fields)
+            if proxy_config is None:
+                st.warning(
+                    "Прокси выбран, но поля не заполнены — пробую без прокси."
+                )
+        except Exception as e:
+            st.error(f"Ошибка настройки прокси: {e}")
+            st.stop()
+
     log = st.status("Подготовка…", expanded=True)
 
     try:
@@ -321,7 +407,9 @@ if run_clicked:
 
             transcript = None
             if fetch_transcripts_flag:
-                t_result = fetch_transcript_verbose(vid, languages=languages)
+                t_result = fetch_transcript_verbose(
+                    vid, languages=languages, proxy_config=proxy_config
+                )
                 with log:
                     if t_result.get("segments"):
                         kind = "авто" if t_result["is_generated"] else "ручной"
