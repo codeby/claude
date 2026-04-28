@@ -23,8 +23,18 @@ from youtube_parser.transcripts import fetch_transcript
 
 st.set_page_config(page_title="YouTube Parser", page_icon="🎬", layout="wide")
 
+
+def _default_api_key() -> str:
+    try:
+        if "YOUTUBE_API_KEY" in st.secrets:
+            return str(st.secrets["YOUTUBE_API_KEY"])
+    except Exception:
+        pass
+    return os.environ.get("YOUTUBE_API_KEY", "")
+
+
 if "api_key" not in st.session_state:
-    st.session_state.api_key = os.environ.get("YOUTUBE_API_KEY", "")
+    st.session_state.api_key = _default_api_key()
 if "last_run" not in st.session_state:
     st.session_state.last_run = None
 
