@@ -17,7 +17,7 @@ from .output import (
     write_video_markdown,
 )
 from .sources import collect_video_ids, fetch_video_metadata
-from .transcripts import fetch_transcript
+from .transcripts import fetch_transcript_verbose
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -145,15 +145,21 @@ def main(argv: list[str] | None = None) -> int:
 
         transcript = None
         if not args.no_transcripts:
-            transcript = fetch_transcript(vid, languages=languages)
-            if transcript:
+            t = fetch_transcript_verbose(vid, languages=languages)
+            if t.get("segments"):
                 print(
-                    f"    transcript: {transcript['language']} "
-                    f"({'auto' if transcript['is_generated'] else 'manual'}, "
-                    f"{len(transcript['segments'])} segments)"
+                    f"    transcript: {t['language']} "
+                    f"({'auto' if t['is_generated'] else 'manual'}, "
+                    f"{len(t['segments'])} segments)"
                 )
+                transcript = {
+                    "language": t["language"],
+                    "is_generated": t["is_generated"],
+                    "segments": t["segments"],
+                    "text": t["text"],
+                }
             else:
-                print("    transcript: not available")
+                print(f"    transcript: not available ({t.get('error') or 'unknown'})")
 
         record = dict(meta)
         record["comments"] = comments

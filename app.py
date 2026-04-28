@@ -19,7 +19,7 @@ from youtube_parser.output import (
     write_video_markdown,
 )
 from youtube_parser.sources import collect_video_ids, fetch_video_metadata
-from youtube_parser.transcripts import fetch_transcript
+from youtube_parser.transcripts import fetch_transcript_verbose
 
 
 st.set_page_config(page_title="YouTube Парсер", page_icon="🎬", layout="wide")
@@ -321,16 +321,27 @@ if run_clicked:
 
             transcript = None
             if fetch_transcripts_flag:
-                transcript = fetch_transcript(vid, languages=languages)
+                t_result = fetch_transcript_verbose(vid, languages=languages)
                 with log:
-                    if transcript:
-                        kind = "авто" if transcript["is_generated"] else "ручной"
+                    if t_result.get("segments"):
+                        kind = "авто" if t_result["is_generated"] else "ручной"
                         st.write(
-                            f"   • транскрипт: {transcript['language']} ({kind}, "
-                            f"{len(transcript['segments'])} сегментов)"
+                            f"   • транскрипт: {t_result['language']} ({kind}, "
+                            f"{len(t_result['segments'])} сегментов)"
                         )
+                        transcript = {
+                            "language": t_result["language"],
+                            "is_generated": t_result["is_generated"],
+                            "segments": t_result["segments"],
+                            "text": t_result["text"],
+                        }
                     else:
-                        st.write("   • транскрипт недоступен")
+                        err = t_result.get("error")
+                        reason = {
+                            "disabled": "субтитры отключены автором",
+                            "not_found": "у видео нет субтитров",
+                        }.get(err, f"ошибка: {err}" if err else "недоступен")
+                        st.write(f"   • транскрипт: {reason}")
 
             record = dict(meta)
             record["comments"] = comments

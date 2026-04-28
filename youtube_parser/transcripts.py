@@ -1,30 +1,70 @@
-"""Fetch transcripts using youtube-transcript-api (no API quota cost)."""
+"""Fetch transcripts via youtube-transcript-api (no API quota cost).
+
+Returns a result dict with status info so the UI can distinguish between
+"video has no transcript" and "request failed/blocked".
+"""
 from __future__ import annotations
 
 from youtube_transcript_api import (
+    AgeRestricted,
+    IpBlocked,
     NoTranscriptFound,
+    RequestBlocked,
     TranscriptsDisabled,
+    VideoUnavailable,
+    VideoUnplayable,
+    YouTubeRequestFailed,
     YouTubeTranscriptApi,
 )
-from youtube_transcript_api._errors import VideoUnavailable
 
 
 def fetch_transcript(
     video_id: str, languages: list[str] | None = None
 ) -> dict | None:
-    """Return transcript info for a video, or None if unavailable.
+    """Return transcript info, or None if the video has no usable transcript.
 
-    Tries the requested languages in order, falls back to any available
-    transcript (translating to the first preferred language if needed).
+    Tries preferred languages in order: manual subtitles first, then auto;
+    falls back to any available transcript (translating to first preferred
+    language if possible). Returns None on missing/disabled transcripts and
+    on access errors (with `error` key set in the dict if you call
+    fetch_transcript_verbose).
+    """
+    result = fetch_transcript_verbose(video_id, languages=languages)
+    if result.get("error"):
+        return None
+    if not result.get("segments"):
+        return None
+    return result
+
+
+def fetch_transcript_verbose(
+    video_id: str, languages: list[str] | None = None
+) -> dict:
+    """Same as fetch_transcript but always returns a dict with status info.
+
+    Keys:
+      segments: list of {start, duration, text} (empty if no transcript)
+      text:     joined plain text
+      language: language_code
+      is_generated: bool
+      error:    None | "disabled" | "not_found" | "blocked" | "unavailable" | str
     """
     preferred = languages or ["ru", "en"]
+    api = YouTubeTranscriptApi()
 
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-    except (TranscriptsDisabled, VideoUnavailable):
-        return None
-    except Exception:
-        return None
+        transcript_list = api.list(video_id)
+    except TranscriptsDisabled:
+        return {"error": "disabled", "segments": [], "text": "", "language": None, "is_generated": None}
+    except (VideoUnavailable, VideoUnplayable, AgeRestricted) as e:
+        return {"error": f"unavailable: {type(e).__name__}", "segments": [], "text": "",
+                "language": None, "is_generated": None}
+    except (IpBlocked, RequestBlocked, YouTubeRequestFailed) as e:
+        return {"error": f"blocked: {type(e).__name__}", "segments": [], "text": "",
+                "language": None, "is_generated": None}
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}", "segments": [], "text": "",
+                "language": None, "is_generated": None}
 
     transcript = None
     try:
@@ -42,27 +82,39 @@ def fetch_transcript(
         try:
             any_t = next(iter(transcript_list))
             if any_t.is_translatable:
-                transcript = any_t.translate(preferred[0])
+                try:
+                    transcript = any_t.translate(preferred[0])
+                except Exception:
+                    transcript = any_t
             else:
                 transcript = any_t
-        except (StopIteration, NoTranscriptFound):
-            return None
+        except StopIteration:
+            return {"error": "not_found", "segments": [], "text": "",
+                    "language": None, "is_generated": None}
 
     try:
-        segments = transcript.fetch()
-    except Exception:
-        return None
+        fetched = transcript.fetch()
+    except (IpBlocked, RequestBlocked, YouTubeRequestFailed) as e:
+        return {"error": f"blocked: {type(e).__name__}", "segments": [], "text": "",
+                "language": transcript.language_code, "is_generated": transcript.is_generated}
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}", "segments": [], "text": "",
+                "language": transcript.language_code, "is_generated": transcript.is_generated}
+
+    snippets = list(fetched)
+    segments = [
+        {
+            "start": float(getattr(s, "start", 0.0)),
+            "duration": float(getattr(s, "duration", 0.0)),
+            "text": getattr(s, "text", ""),
+        }
+        for s in snippets
+    ]
 
     return {
         "language": transcript.language_code,
         "is_generated": transcript.is_generated,
-        "segments": [
-            {
-                "start": float(s["start"]),
-                "duration": float(s.get("duration", 0)),
-                "text": s["text"],
-            }
-            for s in segments
-        ],
+        "segments": segments,
         "text": " ".join(s["text"].strip() for s in segments if s["text"].strip()),
+        "error": None,
     }
