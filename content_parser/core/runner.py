@@ -54,12 +54,22 @@ def run(
     log(f"Found {len(item_ids)} item(s).")
 
     items: list[Item] = []
-    for item in plugin.fetch(item_ids, settings, secrets, progress=progress):
-        items.append(item)
-        write_item_json(item, out_dir)
-        write_item_markdown(item, out_dir)
+    fetch_error: BaseException | None = None
+    try:
+        for item in plugin.fetch(item_ids, settings, secrets, progress=progress):
+            items.append(item)
+            write_item_json(item, out_dir)
+            write_item_markdown(item, out_dir)
+    except BaseException as e:
+        fetch_error = e
+    finally:
+        # Always flush summary + index so partial runs are still inspectable.
+        if items:
+            write_summary_csv(items, out_dir)
+            write_index_markdown(items, out_dir)
 
-    write_summary_csv(items, out_dir)
-    write_index_markdown(items, out_dir)
+    if fetch_error is not None:
+        log(f"Aborted after {len(items)} item(s): {type(fetch_error).__name__}: {fetch_error}")
+        raise fetch_error
     log(f"Done — {len(items)} item(s).")
     return RunResult(out_dir=out_dir, items=items)

@@ -66,9 +66,14 @@ def delete_secret(name: str) -> None:
     _remove_from_secrets_toml(name)
 
 
+def _toml_escape(value: str) -> str:
+    """Escape backslashes and double quotes for TOML basic strings."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _upsert_secrets_toml(key: str, value: str) -> None:
     SECRETS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    line = f'{key} = "{value}"'
+    line = f'{key} = "{_toml_escape(value)}"'
     if SECRETS_PATH.exists():
         existing = SECRETS_PATH.read_text(encoding="utf-8").splitlines()
         replaced = False

@@ -1,24 +1,50 @@
-"""Plugin discovery — explicit list, no entry-point magic."""
+"""Plugin discovery — explicit list, no entry-point magic.
+
+Plugins that fail to import for *missing optional dependencies* are skipped
+quietly so the rest of the registry stays usable. Any other failure (typo,
+runtime error in plugin module) is reported to stderr instead of disappearing.
+"""
 from __future__ import annotations
+
+import logging
+import sys
 
 from .plugin import SourcePlugin
 
+logger = logging.getLogger(__name__)
+
+
+def _try_load(loader, label: str) -> SourcePlugin | None:
+    try:
+        return loader()
+    except ImportError as e:
+        logger.debug("Skipping %s plugin (optional dep missing): %s", label, e)
+        return None
+    except Exception as e:  # pragma: no cover - defensive
+        print(
+            f"[content_parser.registry] WARNING: {label} plugin failed to load: "
+            f"{type(e).__name__}: {e}",
+            file=sys.stderr,
+        )
+        return None
+
 
 def all_plugins() -> list[SourcePlugin]:
-    """Instantiate every registered plugin. Import lazily so optional deps don't break startup."""
+    """Instantiate every registered plugin."""
     plugins: list[SourcePlugin] = []
 
-    try:
+    def _load_youtube():
         from ..plugins.youtube.plugin import YouTubePlugin
-        plugins.append(YouTubePlugin())
-    except Exception:
-        pass
+        return YouTubePlugin()
 
-    try:
+    def _load_instagram():
         from ..plugins.instagram.plugin import InstagramPlugin
-        plugins.append(InstagramPlugin())
-    except Exception:
-        pass
+        return InstagramPlugin()
+
+    for loader, label in [(_load_youtube, "youtube"), (_load_instagram, "instagram")]:
+        p = _try_load(loader, label)
+        if p is not None:
+            plugins.append(p)
 
     return plugins
 
@@ -27,4 +53,5 @@ def get_plugin(name: str) -> SourcePlugin:
     for p in all_plugins():
         if p.name == name:
             return p
-    raise KeyError(f"No plugin named {name!r}. Available: {[p.name for p in all_plugins()]}")
+    available = [p.name for p in all_plugins()]
+    raise KeyError(f"No plugin named {name!r}. Available: {available}")
