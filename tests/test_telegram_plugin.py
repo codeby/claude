@@ -171,6 +171,115 @@ class FetchAuthGuardTest(unittest.TestCase):
             list(p.fetch(["channel:durov"], {}, {}))
 
 
+class ActorIdValidationTest(unittest.TestCase):
+    def setUp(self):
+        self.p = TelegramPlugin()
+
+    def _patch_client(self):
+        return patch("content_parser.plugins.telegram.plugin.ApifyClient")
+
+    def test_default_used_when_empty(self):
+        with self._patch_client() as MC:
+            MC.return_value.run_actor.return_value = []
+            list(self.p.fetch(
+                ["channel:durov"], {"actor_id": ""},
+                {"APIFY_API_TOKEN": "x"},
+            ))
+            actor_id, _ = MC.return_value.run_actor.call_args[0]
+            self.assertEqual(actor_id, "apify/telegram-channel-scraper")
+
+    def test_default_used_when_whitespace(self):
+        with self._patch_client() as MC:
+            MC.return_value.run_actor.return_value = []
+            list(self.p.fetch(
+                ["channel:durov"], {"actor_id": "   "},
+                {"APIFY_API_TOKEN": "x"},
+            ))
+            actor_id, _ = MC.return_value.run_actor.call_args[0]
+            self.assertEqual(actor_id, "apify/telegram-channel-scraper")
+
+    def test_valid_username_actor_form(self):
+        with self._patch_client() as MC:
+            MC.return_value.run_actor.return_value = []
+            list(self.p.fetch(
+                ["channel:durov"], {"actor_id": "73code/telegram-scraper"},
+                {"APIFY_API_TOKEN": "x"},
+            ))
+            actor_id, _ = MC.return_value.run_actor.call_args[0]
+            self.assertEqual(actor_id, "73code/telegram-scraper")
+
+    def test_valid_tilde_form(self):
+        with self._patch_client() as MC:
+            MC.return_value.run_actor.return_value = []
+            list(self.p.fetch(
+                ["channel:durov"], {"actor_id": "user~actor"},
+                {"APIFY_API_TOKEN": "x"},
+            ))
+            self.assertEqual(MC.return_value.run_actor.call_args[0][0], "user~actor")
+
+    def test_garbage_actor_id_raises(self):
+        with self._patch_client() as MC:
+            MC.return_value.run_actor.return_value = []
+            for bad in ("noslash", "/missing", "missing/", "has spaces/x", "../../etc"):
+                with self.subTest(bad=bad):
+                    with self.assertRaises(PluginError):
+                        list(self.p.fetch(
+                            ["channel:durov"], {"actor_id": bad},
+                            {"APIFY_API_TOKEN": "x"},
+                        ))
+
+
+class ApifyErrorMappingTest(unittest.TestCase):
+    """ApifyError from the underlying client is wrapped in PluginError."""
+
+    def setUp(self):
+        self.p = TelegramPlugin()
+
+    def test_channels_call_failure(self):
+        from content_parser.plugins.instagram.apify_client import ApifyError
+        with patch("content_parser.plugins.telegram.plugin.ApifyClient") as MC:
+            MC.return_value.run_actor.side_effect = ApifyError("simulated failure")
+            with self.assertRaises(PluginError) as cm:
+                list(self.p.fetch(
+                    ["channel:durov"], {}, {"APIFY_API_TOKEN": "x"},
+                ))
+            self.assertIn("channels", str(cm.exception))
+            self.assertIn("simulated failure", str(cm.exception))
+
+    def test_posts_call_failure(self):
+        from content_parser.plugins.instagram.apify_client import ApifyError
+        with patch("content_parser.plugins.telegram.plugin.ApifyClient") as MC:
+            MC.return_value.run_actor.side_effect = ApifyError("posts went bad")
+            with self.assertRaises(PluginError) as cm:
+                list(self.p.fetch(
+                    ["post:https://t.me/durov/1"], {},
+                    {"APIFY_API_TOKEN": "x"},
+                ))
+            self.assertIn("posts", str(cm.exception))
+
+
+class PrivateChannelRejectTest(unittest.TestCase):
+    def setUp(self):
+        self.p = TelegramPlugin()
+
+    def test_resolve_explicit_error_for_private_url(self):
+        with self.assertRaises(PluginError) as cm:
+            self.p.resolve(
+                {"post_url": ["https://t.me/c/123/456"]},
+                {},
+                {"APIFY_API_TOKEN": "x"},
+            )
+        msg = str(cm.exception)
+        self.assertIn("private", msg.lower())
+        # Must mention /c/ pattern so user understands what's wrong
+        self.assertTrue("/c/" in msg or "private-channel" in msg.lower())
+
+    def test_is_private_channel_url_helper(self):
+        self.assertTrue(self.p._is_private_channel_url("https://t.me/c/123/456"))
+        self.assertFalse(self.p._is_private_channel_url("https://t.me/durov/123"))
+        self.assertFalse(self.p._is_private_channel_url("https://evil.example/c/1/2"))
+
+
 class FetchDispatchTest(unittest.TestCase):
     def setUp(self):
         self.p = TelegramPlugin()

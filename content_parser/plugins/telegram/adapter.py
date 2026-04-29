@@ -58,6 +58,37 @@ def _reactions_total(reactions: Any) -> int | None:
     return None
 
 
+def _to_int(value: Any) -> int | None:
+    """Coerce a numeric value to int. Returns None for missing/non-numeric values
+    instead of letting a stray dict (e.g. {'count': 100}) leak into media."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _replies_count(msg: dict) -> int | None:
+    """Telegram scrapers represent replies inconsistently:
+        replies: 42                   → number
+        replies: [...]                → list of comment dicts → use length
+        repliesCount / replies_count  → number under different keys
+    """
+    raw = msg.get("replies")
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, list):
+        return len(raw)
+    return _to_int(_pick(msg, "repliesCount", "replies_count", "commentsCount"))
+
+
 def _channel_label(msg: dict) -> tuple[str | None, str | None]:
     """Extract (display name, channel username) from a message dict."""
     title = _pick(msg, "channelTitle", "channel_title", "chatTitle", "chat_title")
@@ -90,16 +121,16 @@ def message_to_item(msg: dict) -> Item:
     text = _pick(msg, "text", "message", "content", default="")
 
     reactions_count = _reactions_total(_pick(msg, "reactions", "reactions_count"))
-    media_obj = msg.get("media") if isinstance(msg.get("media"), dict) else None
+    raw_media = msg.get("media")
+    media_obj = raw_media if isinstance(raw_media, dict) else None
     media_type = _pick(msg, "mediaType", "media_type") or (
         media_obj.get("type") if media_obj else None
     )
 
     media: dict = {
-        "views_count": _pick(msg, "views", "viewCount", "view_count"),
-        "forwards_count": _pick(msg, "forwards", "forwardCount", "forward_count"),
-        # Numeric replies count if present; otherwise the length of any embedded comments list.
-        "comments_count": _pick(msg, "repliesCount", "replies_count", "commentsCount"),
+        "views_count": _to_int(_pick(msg, "views", "viewCount", "view_count")),
+        "forwards_count": _to_int(_pick(msg, "forwards", "forwardCount", "forward_count")),
+        "comments_count": _replies_count(msg),
         "reactions_count": reactions_count,
         "media_type": media_type,
         "is_pinned": bool(_pick(msg, "isPinned", "is_pinned", default=False)),
@@ -131,8 +162,12 @@ def message_to_item(msg: dict) -> Item:
 def _extract_comments(msg: dict, *, parent_url: str | None = None) -> list[Comment]:
     raw = _pick(msg, "replies_data", "comments", "discussion", "thread", default=None)
     if raw is None:
-        return []
-    # 'replies' might be a count int OR a list of comment dicts depending on actor
+        # Plain 'replies' might also hold the list (some scrapers).
+        replies_field = msg.get("replies")
+        if isinstance(replies_field, list):
+            raw = replies_field
+        else:
+            return []
     if isinstance(raw, int):
         return []
     if isinstance(raw, dict) and "items" in raw:
@@ -140,11 +175,20 @@ def _extract_comments(msg: dict, *, parent_url: str | None = None) -> list[Comme
     if not isinstance(raw, list):
         return []
 
+    # Two-pass: collect known comment IDs first, then assign parent_id from
+    # reply_to_message_id when the parent is in the same fetched batch.
+    flat: list[dict] = [c for c in raw if isinstance(c, dict)]
+    known_ids: set[str] = set()
+    for c in flat:
+        cid = _pick(c, "id", "messageId", "message_id", "comment_id")
+        if cid is not None:
+            known_ids.add(str(cid))
+
     out: list[Comment] = []
-    for c in raw:
-        if not isinstance(c, dict):
-            continue
-        out.append(_comment_from_dict(c, parent_id=None))
+    for c in flat:
+        reply_to = _pick(c, "reply_to_message_id", "replyToMessageId", "reply_to_msg_id")
+        parent_id = str(reply_to) if reply_to is not None and str(reply_to) in known_ids else None
+        out.append(_comment_from_dict(c, parent_id=parent_id))
     return out
 
 

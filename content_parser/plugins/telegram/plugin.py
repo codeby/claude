@@ -19,6 +19,8 @@ from .adapter import message_to_item
 
 _TG_HOSTS = ("t.me", "telegram.me")
 _USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")
+# Apify actor IDs are <username>/<actor> or <username>~<actor>.
+_ACTOR_ID_RE = re.compile(r"^[A-Za-z0-9_-]+[/~][A-Za-z0-9_.-]+$")
 _RESERVED_PATHS = {
     "joinchat", "addstickers", "share", "iv", "proxy", "socks", "addtheme",
     "login", "setlanguage", "addlist",
@@ -95,6 +97,11 @@ class TelegramPlugin(SourcePlugin):
             url = u.strip()
             if not url:
                 continue
+            if self._is_private_channel_url(url):
+                raise PluginError(
+                    f"{url!r} is a private-channel URL (path /c/<chat_id>/...). "
+                    "Apify scrapers can only read public channels."
+                )
             normalized = self._extract_post_url(url)
             if not normalized:
                 raise PluginError(
@@ -120,7 +127,11 @@ class TelegramPlugin(SourcePlugin):
             raise AuthError("APIFY_API_TOKEN is required")
         client = ApifyClient(token)
 
-        actor_id = str(settings.get("actor_id") or "apify/telegram-channel-scraper").strip()
+        actor_id = str(settings.get("actor_id") or "").strip() or "apify/telegram-channel-scraper"
+        if not _ACTOR_ID_RE.match(actor_id):
+            raise PluginError(
+                f"Invalid actor_id {actor_id!r}. Expected 'username/actor' or 'username~actor'."
+            )
         max_messages = int(settings.get("max_messages_per_channel", 50))
         fetch_comments = bool(settings.get("fetch_comments", True))
         max_comments = int(settings.get("max_comments_per_post", 100))
@@ -173,31 +184,27 @@ class TelegramPlugin(SourcePlugin):
             except ApifyError as e:
                 raise PluginError(f"Apify call failed (posts): {e}") from e
 
-        # Dedupe by item_id (channel_username + message id).
+        # Single-pass parse + dedupe by item_id (no double work for big result sets).
         seen: set[str] = set()
-        unique: list[dict] = []
-        for msg in all_messages:
-            try:
-                item = message_to_item(msg)
-            except (ValueError, KeyError):
-                continue
-            if item.item_id in seen:
-                continue
-            seen.add(item.item_id)
-            unique.append(msg)
-
-        total = len(unique)
-        for i, msg in enumerate(unique, 1):
+        items: list[Item] = []
+        for i, msg in enumerate(all_messages, 1):
             try:
                 item = message_to_item(msg)
             except Exception as e:
-                item = Item(
+                items.append(Item(
                     source="telegram",
                     item_id=str(msg.get("id") or f"unknown_{i}"),
                     url=str(msg.get("url") or ""),
                     extra={"adapter_error": str(e), "raw": msg},
-                )
+                ))
+                continue
+            if item.item_id in seen:
+                continue
+            seen.add(item.item_id)
+            items.append(item)
 
+        total = len(items)
+        for i, item in enumerate(items, 1):
             # Cap comments to settings even if the actor returned more.
             if item.comments and len(item.comments) > max_comments:
                 item.comments = item.comments[:max_comments]
@@ -239,6 +246,18 @@ class TelegramPlugin(SourcePlugin):
                 "(must start with a letter, 5-32 chars: letters, digits, underscore)."
             )
         return v
+
+    @classmethod
+    def _is_private_channel_url(cls, url: str) -> bool:
+        """t.me/c/<chat_id>/<msg_id> is the private-channel URL form."""
+        v = url.strip()
+        if not v.startswith("http"):
+            return False
+        parsed = urlparse(v)
+        if not _is_tg_host(parsed.hostname or ""):
+            return False
+        parts = [p for p in parsed.path.split("/") if p]
+        return len(parts) >= 2 and parts[0].lower() == "c"
 
     @classmethod
     def _extract_post_url(cls, url: str) -> str | None:
