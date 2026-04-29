@@ -49,11 +49,16 @@ def all_plugins() -> list[SourcePlugin]:
         from ..plugins.vk.plugin import VKPlugin
         return VKPlugin()
 
+    def _load_telegram():
+        from ..plugins.telegram.plugin import TelegramPlugin
+        return TelegramPlugin()
+
     for loader, label in [
         (_load_youtube, "youtube"),
         (_load_instagram, "instagram"),
         (_load_reddit, "reddit"),
         (_load_vk, "vk"),
+        (_load_telegram, "telegram"),
     ]:
         p = _try_load(loader, label)
         if p is not None:
