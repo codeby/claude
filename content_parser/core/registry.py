@@ -41,7 +41,15 @@ def all_plugins() -> list[SourcePlugin]:
         from ..plugins.instagram.plugin import InstagramPlugin
         return InstagramPlugin()
 
-    for loader, label in [(_load_youtube, "youtube"), (_load_instagram, "instagram")]:
+    def _load_reddit():
+        from ..plugins.reddit.plugin import RedditPlugin
+        return RedditPlugin()
+
+    for loader, label in [
+        (_load_youtube, "youtube"),
+        (_load_instagram, "instagram"),
+        (_load_reddit, "reddit"),
+    ]:
         p = _try_load(loader, label)
         if p is not None:
             plugins.append(p)
