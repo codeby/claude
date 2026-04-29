@@ -31,9 +31,12 @@ class ApifyClient:
         """
         slug = actor_id.replace("/", "~")
         url = f"{APIFY_BASE}/acts/{slug}/run-sync-get-dataset-items"
-        params = {"token": self.token, "format": "json"}
+        headers = {"Authorization": f"Bearer {self.token}"}
+        params = {"format": "json"}
         try:
-            r = requests.post(url, params=params, json=actor_input, timeout=self.timeout)
+            r = requests.post(
+                url, headers=headers, params=params, json=actor_input, timeout=self.timeout
+            )
         except requests.RequestException as e:
             raise ApifyError(f"Network error talking to Apify: {e}") from e
 
