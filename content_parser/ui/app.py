@@ -94,7 +94,7 @@ def _sidebar(plugin) -> tuple[dict[str, str], dict]:
             secrets[k] = value
 
         # Optional shared secrets that some plugins use
-        for opt in ("WEBSHARE_USERNAME", "WEBSHARE_PASSWORD", "PROXY_HTTP_URL", "PROXY_HTTPS_URL"):
+        for opt in ("WEBSHARE_USERNAME", "WEBSHARE_PASSWORD", "PROXY_HTTP_URL", "PROXY_HTTPS_URL", "OPENAI_API_KEY"):
             v = get_secret(opt)
             if v:
                 secrets[opt] = v
@@ -162,6 +162,37 @@ def _sidebar(plugin) -> tuple[dict[str, str], dict]:
                     )
 
         secrets.update({k: v for k, v in proxy_secrets.items() if v})
+
+        # If transcription is on, expose the OpenAI key inline so the user
+        # can paste it without leaving the plugin form.
+        if settings.get("transcribe_videos"):
+            with st.expander("🎤 Параметры Whisper", expanded=True):
+                openai_key = st.text_input(
+                    "OPENAI_API_KEY",
+                    value=get_secret("OPENAI_API_KEY"),
+                    type="password",
+                    key="openai_api_key",
+                    help="Получить на https://platform.openai.com/api-keys",
+                )
+                col_s, col_c = st.columns(2)
+                with col_s:
+                    if st.button("💾 Сохранить ключ", use_container_width=True, key="save_openai"):
+                        if openai_key.strip():
+                            save_secret("OPENAI_API_KEY", openai_key.strip())
+                            st.success("Сохранено")
+                        else:
+                            st.warning("Сначала вставь ключ")
+                with col_c:
+                    if st.button("🗑️ Удалить", use_container_width=True, key="clear_openai"):
+                        delete_secret("OPENAI_API_KEY")
+                        st.session_state["openai_api_key"] = ""
+                        st.rerun()
+                if openai_key:
+                    secrets["OPENAI_API_KEY"] = openai_key
+                st.caption(
+                    "⚠️ Whisper тарифицируется ~$0.006/мин аудио. "
+                    "На своей машине нужен `ffmpeg` (apt install ffmpeg / brew install ffmpeg)."
+                )
 
         # ----- Google Sheets loader -----
         st.divider()

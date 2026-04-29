@@ -77,6 +77,11 @@ class TelegramPlugin(SourcePlugin):
             FieldSpec("fetch_comments", "Парсить комментарии", "checkbox", True),
             FieldSpec("max_comments_per_post", "Макс. комментариев на пост",
                       "number", 100, min_value=1, max_value=1000),
+            FieldSpec("transcribe_videos", "🎤 Транскрибировать видео (Whisper)", "checkbox", False,
+                      help="Скачивает аудио + шлёт в OpenAI Whisper. "
+                           "Нужен OPENAI_API_KEY и ffmpeg. ~$0.006/мин."),
+            FieldSpec("max_audio_seconds_per_video", "Макс. секунд аудио на пост",
+                      "number", 600, min_value=10, max_value=3600),
         ]
 
     # ------------------------------------------------------------------
@@ -208,6 +213,9 @@ class TelegramPlugin(SourcePlugin):
             # Cap comments to settings even if the actor returned more.
             if item.comments and len(item.comments) > max_comments:
                 item.comments = item.comments[:max_comments]
+
+            from ...transcription.runner import maybe_transcribe  # noqa: PLC0415
+            maybe_transcribe(item, settings, secrets)
 
             if progress:
                 progress(i, total, item.item_id)

@@ -55,6 +55,12 @@ class InstagramPlugin(SourcePlugin):
                       options=["posts", "details", "comments"],
                       help="Для прямых ссылок на посты/рилсы всегда используется 'details'."),
             FieldSpec("add_parent_data", "Включать данные родительского аккаунта", "checkbox", False),
+            FieldSpec("transcribe_videos", "🎤 Транскрибировать видео (Whisper)", "checkbox", False,
+                      help="Скачивает аудио рилса и шлёт в OpenAI Whisper. "
+                           "Нужен OPENAI_API_KEY и ffmpeg на машине. ~$0.006/мин."),
+            FieldSpec("max_audio_seconds_per_video", "Макс. секунд аудио на пост",
+                      "number", 600, min_value=10, max_value=3600,
+                      help="Если рилс длиннее — пропускается. Защита от случайных счетов."),
         ]
 
     # ------------------------------------------------------------------
@@ -161,6 +167,10 @@ class InstagramPlugin(SourcePlugin):
                     url=str(post.get("url") or ""),
                     extra={"adapter_error": str(e), "raw": post},
                 )
+
+            from ...transcription.runner import maybe_transcribe  # noqa: PLC0415
+            maybe_transcribe(item, settings, secrets)
+
             if progress:
                 progress(i, total, item.item_id)
             yield item

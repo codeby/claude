@@ -67,6 +67,11 @@ class YouTubePlugin(SourcePlugin):
             FieldSpec("proxy_provider", "Прокси для транскриптов", "select",
                       "Без прокси", options=["Без прокси", "Webshare", "HTTP-прокси"],
                       help="На Streamlit Cloud YouTube блокирует запросы за субтитрами."),
+            FieldSpec("transcribe_videos", "🎤 Whisper fallback (если субтитров нет)", "checkbox", False,
+                      help="Когда youtube-transcript-api не вернул субтитры, скачивает аудио "
+                           "и транскрибирует через OpenAI Whisper. Нужен OPENAI_API_KEY и ffmpeg."),
+            FieldSpec("max_audio_seconds_per_video", "Макс. секунд аудио на видео",
+                      "number", 600, min_value=10, max_value=3600),
         ]
 
     def resolve(
@@ -123,6 +128,11 @@ class YouTubePlugin(SourcePlugin):
             if settings.get("fetch_transcripts", True):
                 t = fetch_transcript_verbose(vid, languages=languages, proxy_config=proxy_config)
                 item.transcript = transcript_dict_to_transcript(t)
+
+            # Whisper fallback: only if youtube-transcript-api couldn't produce
+            # segments (subtitles disabled, blocked, etc.) AND user opted in.
+            from ...transcription.runner import maybe_transcribe  # noqa: PLC0415
+            maybe_transcribe(item, settings, secrets, only_if_missing=True)
 
             yield item
 

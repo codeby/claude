@@ -87,6 +87,11 @@ class VKPlugin(SourcePlugin):
             FieldSpec("comment_depth", "Глубина комментариев", "select", "top_level",
                       options=["top_level", "all"],
                       help="top_level — только верхний уровень; all — со всеми ответами."),
+            FieldSpec("transcribe_videos", "🎤 Транскрибировать видео (Whisper)", "checkbox", False,
+                      help="Скачивает аудио + шлёт в OpenAI Whisper. "
+                           "Нужен OPENAI_API_KEY и ffmpeg. ~$0.006/мин."),
+            FieldSpec("max_audio_seconds_per_video", "Макс. секунд аудио на пост",
+                      "number", 600, min_value=10, max_value=3600),
         ]
 
     # ------------------------------------------------------------------
@@ -199,6 +204,9 @@ class VKPlugin(SourcePlugin):
                     )
                 except Exception as e:
                     item.extra["comments_error"] = str(e)
+
+            from ...transcription.runner import maybe_transcribe  # noqa: PLC0415
+            maybe_transcribe(item, settings, secrets)
 
             if progress:
                 progress(i, total, item.item_id)
