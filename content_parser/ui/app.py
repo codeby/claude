@@ -191,7 +191,9 @@ def _sidebar(plugin) -> tuple[dict[str, str], dict]:
                     secrets["OPENAI_API_KEY"] = openai_key
                 st.caption(
                     "⚠️ Whisper тарифицируется ~$0.006/мин аудио. "
-                    "На своей машине нужен `ffmpeg` (apt install ffmpeg / brew install ffmpeg)."
+                    "На своей машине нужен `ffmpeg` (apt install ffmpeg / brew install ffmpeg). "
+                    "Сохранённый ключ остаётся при выключении чекбокса — удалить можно "
+                    "только кнопкой 🗑️."
                 )
 
         # ----- Google Sheets loader -----

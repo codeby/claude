@@ -10,6 +10,55 @@ from unittest.mock import patch
 from content_parser.core.schema import Item, Transcript
 from content_parser.transcription import cache as cache_mod
 from content_parser.transcription import runner as runner_mod
+from content_parser.transcription.runner import _is_public_url
+
+
+class IsPublicUrlTest(unittest.TestCase):
+    def test_normal_https_url(self):
+        self.assertTrue(_is_public_url("https://www.instagram.com/p/AAA/"))
+        self.assertTrue(_is_public_url("https://t.me/durov/123"))
+        self.assertTrue(_is_public_url("https://cdn.example.com/v.mp4"))
+
+    def test_http_also_ok(self):
+        self.assertTrue(_is_public_url("http://example.com/v.mp4"))
+
+    def test_other_schemes_rejected(self):
+        self.assertFalse(_is_public_url("file:///etc/passwd"))
+        self.assertFalse(_is_public_url("ftp://server/x"))
+        self.assertFalse(_is_public_url("data:text/plain,hello"))
+
+    def test_localhost_rejected(self):
+        self.assertFalse(_is_public_url("http://localhost/x"))
+        self.assertFalse(_is_public_url("http://LOCALHOST/x"))
+        self.assertFalse(_is_public_url("http://127.0.0.1/x"))
+        self.assertFalse(_is_public_url("http://0.0.0.0/x"))
+
+    def test_private_rfc1918_rejected(self):
+        self.assertFalse(_is_public_url("http://10.0.0.1/x"))
+        self.assertFalse(_is_public_url("http://10.255.255.255/x"))
+        self.assertFalse(_is_public_url("http://172.16.0.1/x"))
+        self.assertFalse(_is_public_url("http://192.168.1.1/x"))
+
+    def test_link_local_rejected(self):
+        # AWS metadata endpoint
+        self.assertFalse(_is_public_url("http://169.254.169.254/latest/meta-data/"))
+
+    def test_ipv6_loopback_rejected(self):
+        self.assertFalse(_is_public_url("http://[::1]/x"))
+
+    def test_ipv6_private_rejected(self):
+        # fc00::/7 is unique-local addresses
+        self.assertFalse(_is_public_url("http://[fc00::1]/x"))
+
+    def test_empty_or_invalid(self):
+        self.assertFalse(_is_public_url(""))
+        self.assertFalse(_is_public_url("not a url"))
+        self.assertFalse(_is_public_url(None))  # type: ignore[arg-type]
+
+    def test_dns_name_passes(self):
+        # We can't catch DNS-rebinding without resolution; that's by design.
+        # Any non-IP-literal hostname is accepted at this layer.
+        self.assertTrue(_is_public_url("http://attacker.example/x"))
 
 
 WHISPER_RESPONSE = {
@@ -115,6 +164,23 @@ class MaybeTranscribeTest(unittest.TestCase):
         ta.assert_not_called()
         self.assertIn("too long", item.transcript.error.lower())
 
+    def test_unknown_duration_skips_download(self):
+        # Critical: when duration cannot be probed, we MUST refuse to download
+        # because we can't bound the Whisper bill. Earlier this case fell
+        # through and incurred unbudgeted cost.
+        item = self._item()
+        with patch("content_parser.transcription.runner.get_duration_seconds", return_value=None), \
+             patch("content_parser.transcription.runner.download_audio") as dl, \
+             patch("content_parser.transcription.runner.transcribe_audio") as ta:
+            runner_mod.maybe_transcribe(
+                item,
+                settings={"transcribe_videos": True, "max_audio_seconds_per_video": 600},
+                secrets={"OPENAI_API_KEY": "k"},
+            )
+        dl.assert_not_called()
+        ta.assert_not_called()
+        self.assertIn("duration unknown", item.transcript.error.lower())
+
     def test_download_failure_recorded_in_error(self):
         from content_parser.transcription.downloader import DownloadError
         item = self._item()
@@ -185,6 +251,21 @@ class MaybeTranscribeTest(unittest.TestCase):
         # Was filled by Whisper now
         self.assertEqual(item.transcript.text, "Hello world")
         self.assertEqual(len(item.transcript.segments), 2)
+
+    def test_private_url_rejected_before_download(self):
+        # SSRF guard: even if duration probe would succeed, refuse private IPs.
+        item = self._item(media={"video_url": "http://169.254.169.254/latest/meta-data/"})
+        item.url = ""  # force fallback to media.video_url
+        with patch("content_parser.transcription.runner.get_duration_seconds") as gd, \
+             patch("content_parser.transcription.runner.download_audio") as dl:
+            runner_mod.maybe_transcribe(
+                item,
+                settings={"transcribe_videos": True},
+                secrets={"OPENAI_API_KEY": "k"},
+            )
+        gd.assert_not_called()
+        dl.assert_not_called()
+        self.assertIn("non-public", item.transcript.error.lower())
 
     def test_no_video_url_silent_skip(self):
         item = self._item(media={}, url="")

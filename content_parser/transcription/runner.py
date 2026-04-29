@@ -8,13 +8,56 @@ output still records why.
 from __future__ import annotations
 
 import tempfile
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from ..core.schema import Item, Transcript
 from . import cache as cache_mod
 from .downloader import DownloadError, download_audio, get_duration_seconds
 from .whisper_api import WhisperError, transcribe_audio
+
+
+# Hostnames that should never reach yt-dlp. Anything else gets parsed and
+# checked via the ipaddress module if it looks like an IP literal.
+_DENIED_HOSTNAMES = {"localhost", "0.0.0.0", "ip6-localhost", "ip6-loopback"}
+
+
+def _is_public_url(url: str) -> bool:
+    """Reject URLs that point at the local machine or RFC1918 networks.
+
+    yt-dlp would happily fetch from a URL like 'http://169.254.169.254/...'
+    (AWS metadata) or 'http://10.0.0.1/...' if any of our third-party
+    sources (Apify/VK/Telegram) ever returned one. This guard rejects:
+      - non-http(s) schemes
+      - 'localhost' and well-known loopback hostnames
+      - IPv4/IPv6 literals that resolve to loopback / private / link-local /
+        reserved space
+
+    Note: bare DNS names that resolve to private IPs are NOT caught here
+    (DNS rebinding). Mitigating that needs name resolution + connection
+    pinning, which is yt-dlp's domain.
+    """
+    if not url or not isinstance(url, str):
+        return False
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        return False
+    if host in _DENIED_HOSTNAMES:
+        return False
+    # If the hostname is an IP literal, classify it.
+    try:
+        ip = ip_address(host)
+    except ValueError:
+        return True  # ordinary DNS name — accept
+    return not (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved or ip.is_multicast)
 
 
 def _transcript_from_whisper_response(resp: dict) -> Transcript:
@@ -96,6 +139,16 @@ def maybe_transcribe(
     if not video_url:
         return  # silently skip — no media to transcribe
 
+    # SSRF guard: refuse to send loopback / RFC1918 / link-local URLs to
+    # yt-dlp, which would otherwise fetch from internal networks if any
+    # upstream API returned such a URL (chain-of-trust risk).
+    if not _is_public_url(video_url):
+        item.transcript = Transcript(
+            error=f"refused to fetch non-public URL: {video_url[:60]}",
+            language=None, is_generated=None, segments=[], text="",
+        )
+        return
+
     # Cache lookup before any network/download.
     cached = cache_mod.get(item.source, item.item_id)
     if cached:
@@ -108,10 +161,20 @@ def maybe_transcribe(
         )
         return
 
-    # Per-item duration cap to keep Whisper bills bounded.
+    # Per-item duration cap. We BLOCK if duration is unknown — without a
+    # known length we can't bound the Whisper bill, so refusing is the
+    # cheap-and-safe default. Power users who really need to transcribe
+    # platforms where yt-dlp can't probe metadata can bypass by saving
+    # the audio file and calling whisper_api directly.
     max_seconds = int(settings.get("max_audio_seconds_per_video", 600) or 600)
     duration = get_duration_seconds(video_url)
-    if duration is not None and duration > max_seconds:
+    if duration is None:
+        item.transcript = Transcript(
+            error="video duration unknown; transcription skipped to avoid unbounded cost.",
+            language=None, is_generated=None, segments=[], text="",
+        )
+        return
+    if duration > max_seconds:
         item.transcript = Transcript(
             error=f"video too long: {int(duration)}s > {max_seconds}s cap (transcription skipped).",
             language=None, is_generated=None, segments=[], text="",

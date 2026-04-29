@@ -67,10 +67,12 @@ class TranscribeAudioTest(unittest.TestCase):
             self.assertIn("API key", str(cm.exception))
 
     def test_429_rate_limit(self):
-        with patch("content_parser.transcription.whisper_api.requests.post") as rp:
+        # 429 is now retried; with max_retries=0 we get a single attempt and a raise.
+        with patch("content_parser.transcription.whisper_api.requests.post") as rp, \
+             patch("content_parser.transcription.whisper_api._sleep"):
             rp.return_value = _mock_response({}, ok=False, status=429)
             with self.assertRaises(WhisperError) as cm:
-                transcribe_audio(self.audio, "k")
+                transcribe_audio(self.audio, "k", max_retries=0)
             self.assertIn("rate-limit", str(cm.exception).lower())
 
     def test_other_error_includes_message(self):
@@ -94,6 +96,69 @@ class TranscribeAudioTest(unittest.TestCase):
             result = transcribe_audio(self.audio, "k")
             self.assertEqual(result["text"], "Hello world")
             self.assertEqual(len(result["segments"]), 1)
+
+
+class RetryTest(unittest.TestCase):
+    """Whisper retries 429 and 5xx with exponential backoff."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.audio = Path(self.tmpdir.name) / "x.mp3"
+        self.audio.write_bytes(b"\x00" * 100)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_429_then_success(self):
+        sleeps: list[float] = []
+        responses = [
+            _mock_response({}, ok=False, status=429),
+            _mock_response({"text": "ok", "segments": []}),
+        ]
+        with patch("content_parser.transcription.whisper_api.requests.post", side_effect=responses) as rp, \
+             patch("content_parser.transcription.whisper_api._sleep", side_effect=sleeps.append):
+            result = transcribe_audio(self.audio, "k")
+        self.assertEqual(rp.call_count, 2)
+        self.assertEqual(sleeps, [2.0])
+        self.assertEqual(result["text"], "ok")
+
+    def test_500_then_503_then_success(self):
+        sleeps: list[float] = []
+        responses = [
+            _mock_response({}, ok=False, status=500),
+            _mock_response({}, ok=False, status=503),
+            _mock_response({"text": "ok", "segments": []}),
+        ]
+        with patch("content_parser.transcription.whisper_api.requests.post", side_effect=responses) as rp, \
+             patch("content_parser.transcription.whisper_api._sleep", side_effect=sleeps.append):
+            transcribe_audio(self.audio, "k")
+        self.assertEqual(rp.call_count, 3)
+        self.assertEqual(sleeps, [2.0, 4.0])  # exponential
+
+    def test_429_exhausts_retries_then_raises(self):
+        responses = [_mock_response({}, ok=False, status=429)] * 5  # plenty
+        with patch("content_parser.transcription.whisper_api.requests.post", side_effect=responses) as rp, \
+             patch("content_parser.transcription.whisper_api._sleep"):
+            with self.assertRaises(WhisperError):
+                transcribe_audio(self.audio, "k", max_retries=2)
+        # Initial + 2 retries = 3 calls.
+        self.assertEqual(rp.call_count, 3)
+
+    def test_401_does_not_retry(self):
+        responses = [_mock_response({}, ok=False, status=401)] * 3
+        with patch("content_parser.transcription.whisper_api.requests.post", side_effect=responses) as rp, \
+             patch("content_parser.transcription.whisper_api._sleep"):
+            with self.assertRaises(WhisperError):
+                transcribe_audio(self.audio, "bad")
+        self.assertEqual(rp.call_count, 1)
+
+    def test_400_does_not_retry(self):
+        responses = [_mock_response({"error": {"message": "bad audio"}}, ok=False, status=400)] * 3
+        with patch("content_parser.transcription.whisper_api.requests.post", side_effect=responses) as rp, \
+             patch("content_parser.transcription.whisper_api._sleep"):
+            with self.assertRaises(WhisperError):
+                transcribe_audio(self.audio, "k")
+        self.assertEqual(rp.call_count, 1)
 
 
 if __name__ == "__main__":

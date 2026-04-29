@@ -9,6 +9,7 @@ enforced by OpenAI; we cap on the download side too.
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -23,23 +24,55 @@ class WhisperError(Exception):
     pass
 
 
+class _RetryableWhisperError(WhisperError):
+    """Internal: subclass for 429 / 5xx responses that warrant a retry."""
+
+
 def transcribe_audio(
     audio_path: Path,
     api_key: str,
     *,
     language: str | None = None,
     timeout: int = 300,
+    max_retries: int = 2,
 ) -> dict[str, Any]:
-    """Send an audio file to Whisper. Returns OpenAI's verbose_json shape.
+    """Send an audio file to Whisper, retrying transient failures.
 
-    The verbose_json format gives us segments with start/end timestamps,
-    matching what the existing youtube-transcript-api adapter produces.
+    Returns OpenAI's verbose_json shape (text, language, segments). 429
+    (rate limit) and 5xx responses are retried up to `max_retries` times
+    with exponential backoff (2s, 4s, 8s). 401, 4xx (other), and other
+    WhisperError subclasses surface immediately.
     """
     if not api_key:
         raise WhisperError("OPENAI_API_KEY is required for Whisper transcription.")
     if not audio_path.exists():
         raise WhisperError(f"Audio file does not exist: {audio_path}")
 
+    delay = 2.0
+    for attempt in range(max_retries + 1):
+        try:
+            return _transcribe_once(audio_path, api_key, language=language, timeout=timeout)
+        except _RetryableWhisperError:
+            if attempt >= max_retries:
+                raise
+            _sleep(delay)
+            delay *= 2
+    # Defensive — only reachable if max_retries < 0.
+    raise WhisperError("Whisper retry loop exhausted without a result.")  # pragma: no cover
+
+
+def _sleep(seconds: float) -> None:
+    """Indirection so tests can patch sleep without slowing the suite."""
+    time.sleep(seconds)
+
+
+def _transcribe_once(
+    audio_path: Path,
+    api_key: str,
+    *,
+    language: str | None,
+    timeout: int,
+) -> dict[str, Any]:
     headers = {"Authorization": f"Bearer {api_key}"}
     data: dict[str, Any] = {
         "model": WHISPER_MODEL,
@@ -59,9 +92,11 @@ def transcribe_audio(
     if r.status_code == 401:
         raise WhisperError("OpenAI rejected the API key (401). Check OPENAI_API_KEY.")
     if r.status_code == 429:
-        raise WhisperError("OpenAI rate-limit (429). Wait and retry.")
+        raise _RetryableWhisperError("OpenAI rate-limit (429).")
+    if 500 <= r.status_code < 600:
+        raise _RetryableWhisperError(f"OpenAI server error ({r.status_code}).")
     if not r.ok:
-        # OpenAI puts the error message in {"error": {"message": "..."}}
+        # 4xx other than 401/429 — non-retryable client error.
         try:
             err = r.json().get("error", {}).get("message", r.text[:200])
         except ValueError:
