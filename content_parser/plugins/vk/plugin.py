@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 from ...core.errors import AuthError, PluginError
 from ...core.plugin import FieldSpec, InputSpec, ProgressCb, SourcePlugin
+from ...core.redact import redact_spec
 from ...core.schema import Item
 from .adapter import (
     comment_to_core,
@@ -30,17 +31,6 @@ _RESERVED_PATH_PREFIXES = {
     "event", "topic", "albums", "market", "im", "friends", "settings",
     "search", "groups", "apps", "stickers", "support", "dev",
 }
-
-
-def _redact_spec(spec: str) -> str:
-    """Trim spec for safe logging — drop query/fragment, cap to 80 chars."""
-    for sep in ("?", "#"):
-        if sep in spec:
-            spec = spec.split(sep, 1)[0] + sep + "…"
-            break
-    if len(spec) > 80:
-        spec = spec[:77] + "…"
-    return spec
 
 
 def _is_vk_host(host: str) -> bool:
@@ -170,7 +160,7 @@ class VKPlugin(SourcePlugin):
                 raise
             except Exception as e:
                 raise PluginError(
-                    f"VK error for {_redact_spec(spec)!r}: {e}"
+                    f"VK error for {redact_spec(spec)!r}: {e}"
                 ) from e
 
         # Dedupe by VK item_id (owner_post)

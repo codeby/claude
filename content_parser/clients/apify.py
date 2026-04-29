@@ -1,4 +1,9 @@
-"""Minimal Apify HTTP client — runs an actor synchronously and returns dataset items."""
+"""Minimal Apify HTTP client — runs an actor synchronously and returns dataset items.
+
+Lives outside the plugins/ tree so multiple plugins (Instagram, Telegram, …)
+can share it without depending on each other. The token always travels in
+the Authorization: Bearer header so it doesn't leak into nginx access logs.
+"""
 from __future__ import annotations
 
 from typing import Any

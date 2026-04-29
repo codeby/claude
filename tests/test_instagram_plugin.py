@@ -119,10 +119,10 @@ class ApifyClientAuthTest(unittest.TestCase):
     """ApifyClient sends the token in Authorization header, not query string."""
 
     def test_uses_bearer_header(self):
-        from content_parser.plugins.instagram.apify_client import ApifyClient
+        from content_parser.clients.apify import ApifyClient
 
         with patch(
-            "content_parser.plugins.instagram.apify_client.requests.post"
+            "content_parser.clients.apify.requests.post"
         ) as rp:
             resp = MagicMock()
             resp.ok = True

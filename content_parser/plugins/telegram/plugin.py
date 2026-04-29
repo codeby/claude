@@ -10,10 +10,11 @@ import re
 from typing import Any, Iterator
 from urllib.parse import urlparse
 
+from ...clients.apify import ApifyClient, ApifyError
 from ...core.errors import AuthError, PluginError
 from ...core.plugin import FieldSpec, InputSpec, ProgressCb, SourcePlugin
+from ...core.redact import redact_spec
 from ...core.schema import Item
-from ..instagram.apify_client import ApifyClient, ApifyError
 from .adapter import message_to_item
 
 
@@ -25,17 +26,6 @@ _RESERVED_PATHS = {
     "joinchat", "addstickers", "share", "iv", "proxy", "socks", "addtheme",
     "login", "setlanguage", "addlist",
 }
-
-
-def _redact_spec(spec: str) -> str:
-    """Trim spec for safe logging — drop query/fragment, cap to 80 chars."""
-    for sep in ("?", "#"):
-        if sep in spec:
-            spec = spec.split(sep, 1)[0] + sep + "…"
-            break
-    if len(spec) > 80:
-        spec = spec[:77] + "…"
-    return spec
 
 
 def _is_tg_host(host: str) -> bool:

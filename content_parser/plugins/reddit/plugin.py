@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 from ...core.errors import AuthError, PluginError
 from ...core.plugin import FieldSpec, InputSpec, ProgressCb, SourcePlugin
+from ...core.redact import redact_spec
 from ...core.schema import Item
 from .adapter import comment_to_core, submission_to_item
 from .client import build_reddit
@@ -24,21 +25,6 @@ _REDDIT_HOSTS = ("reddit.com", "redd.it")
 # unbounded replace_more(limit=None) easily produces minutes of work and
 # Reddit-side rate limits on big threads.
 _MAX_REPLACE_MORE = 32
-
-
-def _redact_spec(spec: str) -> str:
-    """Trim a spec for safe logging — drop query/fragment, cap to 80 chars.
-
-    A user might paste a URL with a token in the query (?token=...) or fragment
-    (#access_token=...); neither belongs in logs or exception messages.
-    """
-    for sep in ("?", "#"):
-        if sep in spec:
-            spec = spec.split(sep, 1)[0] + sep + "…"
-            break
-    if len(spec) > 80:
-        spec = spec[:77] + "…"
-    return spec
 
 
 def _is_reddit_host(host: str) -> bool:
@@ -166,7 +152,7 @@ class RedditPlugin(SourcePlugin):
                 ))
             except Exception as e:
                 raise PluginError(
-                    f"Reddit error for {_redact_spec(spec)!r}: {e}"
+                    f"Reddit error for {redact_spec(spec)!r}: {e}"
                 ) from e
 
         # Dedupe by submission id (same post can come from multiple inputs).

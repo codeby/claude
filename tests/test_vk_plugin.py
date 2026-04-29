@@ -5,7 +5,8 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from content_parser.core.errors import AuthError, PluginError, RateLimitError
-from content_parser.plugins.vk.plugin import VKPlugin, _is_vk_host, _redact_spec
+from content_parser.core.redact import redact_spec as _redact_spec
+from content_parser.plugins.vk.plugin import VKPlugin, _is_vk_host
 
 
 class NormalizeCommunityTest(unittest.TestCase):

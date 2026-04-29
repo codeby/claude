@@ -5,10 +5,10 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from content_parser.core.errors import AuthError, PluginError
+from content_parser.core.redact import redact_spec as _redact_spec
 from content_parser.plugins.telegram.plugin import (
     TelegramPlugin,
     _is_tg_host,
-    _redact_spec,
 )
 
 
@@ -236,7 +236,7 @@ class ApifyErrorMappingTest(unittest.TestCase):
         self.p = TelegramPlugin()
 
     def test_channels_call_failure(self):
-        from content_parser.plugins.instagram.apify_client import ApifyError
+        from content_parser.clients.apify import ApifyError
         with patch("content_parser.plugins.telegram.plugin.ApifyClient") as MC:
             MC.return_value.run_actor.side_effect = ApifyError("simulated failure")
             with self.assertRaises(PluginError) as cm:
@@ -247,7 +247,7 @@ class ApifyErrorMappingTest(unittest.TestCase):
             self.assertIn("simulated failure", str(cm.exception))
 
     def test_posts_call_failure(self):
-        from content_parser.plugins.instagram.apify_client import ApifyError
+        from content_parser.clients.apify import ApifyError
         with patch("content_parser.plugins.telegram.plugin.ApifyClient") as MC:
             MC.return_value.run_actor.side_effect = ApifyError("posts went bad")
             with self.assertRaises(PluginError) as cm:

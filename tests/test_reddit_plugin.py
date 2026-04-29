@@ -212,28 +212,28 @@ class RedactSpecTest(unittest.TestCase):
     """_redact_spec strips query/fragment and caps length so logs stay safe."""
 
     def test_strips_query_string(self):
-        from content_parser.plugins.reddit.plugin import _redact_spec
+        from content_parser.core.redact import redact_spec as _redact_spec
         out = _redact_spec("post_url:https://reddit.com/r/x/?token=secret&foo=1")
         self.assertNotIn("token", out)
         self.assertNotIn("secret", out)
         self.assertIn("?…", out)
 
     def test_strips_fragment(self):
-        from content_parser.plugins.reddit.plugin import _redact_spec
+        from content_parser.core.redact import redact_spec as _redact_spec
         out = _redact_spec("post_url:https://reddit.com/x#access_token=xxx")
         self.assertNotIn("access_token", out)
         self.assertNotIn("xxx", out)
         self.assertIn("#…", out)
 
     def test_truncates_long(self):
-        from content_parser.plugins.reddit.plugin import _redact_spec
+        from content_parser.core.redact import redact_spec as _redact_spec
         spec = "subreddit:" + "a" * 200
         out = _redact_spec(spec)
         self.assertLessEqual(len(out), 80)
         self.assertTrue(out.endswith("…"))
 
     def test_short_unchanged(self):
-        from content_parser.plugins.reddit.plugin import _redact_spec
+        from content_parser.core.redact import redact_spec as _redact_spec
         self.assertEqual(_redact_spec("subreddit:python"), "subreddit:python")
 
 

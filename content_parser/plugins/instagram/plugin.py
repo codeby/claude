@@ -9,7 +9,7 @@ from ...core.errors import AuthError, PluginError
 from ...core.plugin import FieldSpec, InputSpec, ProgressCb, SourcePlugin
 from ...core.schema import Item
 from .adapter import post_to_item
-from .apify_client import ApifyClient, ApifyError
+from ...clients.apify import ApifyClient, ApifyError
 
 
 ACTOR_ID = "apify/instagram-scraper"
