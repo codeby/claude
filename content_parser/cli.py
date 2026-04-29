@@ -176,7 +176,19 @@ def cmd_jobs(args: argparse.Namespace) -> int:
         return 0
 
     if args.jobs_command == "run":
-        result = run_job(args.name, log=print, progress=lambda d, t, m: print(f"  [{d}/{t}] {m}"))
+        from .core.errors import AuthError, PluginError  # noqa: PLC0415
+        try:
+            result = run_job(
+                args.name, log=print,
+                progress=lambda d, t, m: print(f"  [{d}/{t}] {m}"),
+            )
+        except (AuthError, PluginError) as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        except KeyError as e:
+            # get_plugin raises KeyError for unknown source.
+            print(f"Error: unknown plugin/source — {e}", file=sys.stderr)
+            return 1
         print(f"\nDone. {len(result.items)} item(s) saved to {result.out_dir.resolve()}")
         return 0
 

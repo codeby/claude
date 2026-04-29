@@ -105,6 +105,23 @@ class JobValidationTest(unittest.TestCase):
         with self.assertRaises(PluginError):
             self._base(inputs={"community": "not a list"}).validate()  # type: ignore[arg-type]
 
+    def test_output_dir_with_dotdot_rejected(self):
+        # Path traversal: 'output_dir: ../../etc' rejected at validation.
+        with self.assertRaises(PluginError) as cm:
+            self._base(output_dir="../../etc").validate()
+        self.assertIn("..", str(cm.exception))
+
+    def test_output_dir_normal_relative_ok(self):
+        self._base(output_dir="custom/scheduled").validate()  # no exception
+
+    def test_output_dir_absolute_ok(self):
+        self._base(output_dir="/tmp/my-output").validate()  # user explicitly opted in
+
+    def test_output_dir_dotdot_in_middle_rejected(self):
+        # ../../ at any position is rejected, not just at start.
+        with self.assertRaises(PluginError):
+            self._base(output_dir="custom/../escape").validate()
+
     def test_sheet_input_missing_sheet(self):
         with self.assertRaises(PluginError):
             self._base(
@@ -182,6 +199,55 @@ sheet_inputs:
 """
         job = load_job_yaml(yaml_alt)
         self.assertEqual(job.sheet_inputs[0].range_a1, "B:B")
+
+    def test_string_value_in_inputs_rejected(self):
+        # Common typo: `community: durov_says` (no brackets) — without the
+        # type-check the loop would iterate the string character by character
+        # and produce ['d','u','r','o','v', ...]. Must raise instead.
+        evil = """\
+name: my-job
+source: vk
+inputs:
+  community: durov_says
+"""
+        with self.assertRaises(PluginError) as cm:
+            load_job_yaml(evil)
+        self.assertIn("must be a list", str(cm.exception))
+        self.assertIn("community", str(cm.exception))
+
+    def test_int_value_in_inputs_rejected(self):
+        evil = """\
+name: x
+source: vk
+inputs:
+  community: 42
+"""
+        with self.assertRaises(PluginError):
+            load_job_yaml(evil)
+
+    def test_dict_value_in_inputs_rejected(self):
+        evil = """\
+name: x
+source: vk
+inputs:
+  community: {nested: dict}
+"""
+        with self.assertRaises(PluginError):
+            load_job_yaml(evil)
+
+    def test_empty_value_in_inputs_treated_as_empty_list(self):
+        # `inputs.community:` with no value yields None. Acceptable as empty list.
+        yaml_empty = """\
+name: x
+source: vk
+inputs:
+  community:
+sheet_inputs:
+  - sheet: longidlongidlongidlongidlong
+    target: community
+"""
+        job = load_job_yaml(yaml_empty)
+        self.assertEqual(job.inputs["community"], [])
 
 
 class OutputDirTest(unittest.TestCase):

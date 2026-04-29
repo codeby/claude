@@ -87,6 +87,47 @@ class BuildCommandTest(unittest.TestCase):
         )
         self.assertIn("/repo/output/scheduled/.cron.log", cmd)
 
+    def test_newline_in_project_root_rejected(self):
+        # crontab is line-based; a literal newline inside any path would split
+        # the entry across lines and corrupt the file. shlex.quote does NOT
+        # protect against this — it just wraps the bytes in single quotes.
+        job = Job(name="x", source="vk", inputs={"community": ["a"]})
+        with self.assertRaises(CronError) as cm:
+            build_command_for_job(
+                job,
+                project_root=Path("/path\nnewline/repo"),
+                python_executable="/usr/bin/python3",
+            )
+        self.assertIn("newline", str(cm.exception).lower())
+
+    def test_newline_in_python_executable_rejected(self):
+        job = Job(name="x", source="vk", inputs={"community": ["a"]})
+        with self.assertRaises(CronError):
+            build_command_for_job(
+                job,
+                project_root=Path("/repo"),
+                python_executable="/usr/bin/py\nthon",
+            )
+
+    def test_newline_in_log_path_rejected(self):
+        job = Job(name="x", source="vk", inputs={"community": ["a"]})
+        with self.assertRaises(CronError):
+            build_command_for_job(
+                job,
+                project_root=Path("/repo"),
+                python_executable="/usr/bin/python3",
+                log_path=Path("/var/log\nbreak/cron.log"),
+            )
+
+    def test_carriage_return_also_rejected(self):
+        job = Job(name="x", source="vk", inputs={"community": ["a"]})
+        with self.assertRaises(CronError):
+            build_command_for_job(
+                job,
+                project_root=Path("/repo\r/here"),
+                python_executable="/usr/bin/python3",
+            )
+
 
 class InstallCronTest(unittest.TestCase):
     """install_cron orchestrates crontab -l → strip → write."""

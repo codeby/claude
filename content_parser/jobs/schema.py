@@ -83,6 +83,16 @@ class Job:
                 raise PluginError(
                     f"Job {self.name!r} sheet_inputs entry missing 'target'."
                 )
+        # output_dir guard: reject path-traversal segments. Absolute paths are
+        # allowed (user explicitly opted in), but ".." anywhere in the value
+        # is rejected — it's almost always a bug, and on shared/multi-user
+        # hosts could surprise the user where files actually land.
+        if self.output_dir:
+            parts = Path(self.output_dir).parts
+            if ".." in parts:
+                raise PluginError(
+                    f"Job {self.name!r} output_dir {self.output_dir!r} must not contain '..'."
+                )
 
     # ------------------------------------------------------------------
     # Output dir resolution
@@ -134,9 +144,17 @@ class Job:
         inputs_raw = data.get("inputs") or {}
         if not isinstance(inputs_raw, dict):
             raise PluginError("'inputs' must be a mapping kind → list.")
-        inputs: dict[str, list[str]] = {
-            str(k): [str(x) for x in (v or [])] for k, v in inputs_raw.items()
-        }
+        inputs: dict[str, list[str]] = {}
+        for k, v in inputs_raw.items():
+            # Catch the common typo 'community: name' (string instead of list of names).
+            # Without this check, the loop would iterate the string character by
+            # character and produce one-letter "values" — silent corruption.
+            if v is not None and not isinstance(v, list):
+                raise PluginError(
+                    f"inputs.{k} must be a list, got {type(v).__name__}: {v!r}. "
+                    "Wrap a single value in [] like `inputs.{k}: [name]`."
+                )
+            inputs[str(k)] = [str(x) for x in (v or [])]
         settings = data.get("settings") or {}
         if not isinstance(settings, dict):
             raise PluginError("'settings' must be a mapping.")

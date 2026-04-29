@@ -80,7 +80,15 @@ def run_job_obj(
 ) -> RunResult:
     log = log or (lambda _msg: None)
 
+    # Compute out_dir ONCE so an early failure (Sheets-load error,
+    # empty-resolved-inputs, etc.) writes last_error.txt into the same
+    # timestamped directory the run would have used — instead of creating
+    # a brand-new timestamped dir just for the error file.
+    out_dir = job.resolved_output_dir()
+
     log(f"Job: {job.name} (source={job.source})")
+    log(f"Output: {out_dir}")
+
     secrets = _collect_secrets(
         get_plugin(job.source).secret_keys,
         need_sheets=bool(job.sheet_inputs),
@@ -89,17 +97,15 @@ def run_job_obj(
     try:
         inputs = _resolve_inputs(job, secrets)
     except Exception as e:
-        _record_failure(job, e)
+        _record_failure(job, e, out_dir=out_dir)
         raise
 
     if not inputs:
         msg = f"Job {job.name!r} has no resolved inputs (inline empty, Sheets returned nothing)."
-        _record_failure(job, PluginError(msg))
+        _record_failure(job, PluginError(msg), out_dir=out_dir)
         raise PluginError(msg)
 
     plugin = get_plugin(job.source)
-    out_dir = job.resolved_output_dir()
-    log(f"Output: {out_dir}")
 
     try:
         result = core_run(
@@ -124,6 +130,8 @@ def run_job_obj(
 
 
 def _record_success(job: Job, out_dir: Path, result: RunResult) -> None:
+    # core_run usually created out_dir already, but mkdir is idempotent and
+    # protects against the edge case where it bailed out before doing so.
     out_dir.mkdir(parents=True, exist_ok=True)
     marker = out_dir / ".last_run.txt"
     marker.write_text(
@@ -134,13 +142,12 @@ def _record_success(job: Job, out_dir: Path, result: RunResult) -> None:
     )
 
 
-def _record_failure(job: Job, exc: Exception, *, out_dir: Path | None = None) -> None:
+def _record_failure(job: Job, exc: Exception, *, out_dir: Path) -> None:
     if job.notify_on_failure == "none":
         return
-    target_dir = out_dir or job.resolved_output_dir()
     try:
-        target_dir.mkdir(parents=True, exist_ok=True)
-        (target_dir / "last_error.txt").write_text(
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "last_error.txt").write_text(
             f"job: {job.name}\n"
             f"failed_at: {datetime.now().isoformat()}\n"
             f"error: {type(exc).__name__}: {exc}\n\n"

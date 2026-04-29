@@ -144,6 +144,20 @@ def build_command_for_job(
     python_executable = python_executable or sys.executable
     log_path = log_path or (project_root / "output" / "scheduled" / ".cron.log")
 
+    # crontab format is line-based, and shlex.quote happily preserves a
+    # newline inside its single-quoted output. A path with a literal \n
+    # would split the cron entry into two lines and corrupt the file.
+    for label, value in (
+        ("project_root", str(project_root)),
+        ("python_executable", python_executable),
+        ("log_path", str(log_path)),
+        ("job.name", job.name),
+    ):
+        if "\n" in value or "\r" in value:
+            raise CronError(
+                f"{label} contains a newline; crontab entries must be single-line."
+            )
+
     cd_part = f"cd {shlex.quote(str(project_root))}"
     run_part = " ".join([
         shlex.quote(python_executable),
