@@ -53,12 +53,17 @@ def all_plugins() -> list[SourcePlugin]:
         from ..plugins.telegram.plugin import TelegramPlugin
         return TelegramPlugin()
 
+    def _load_instagram_graph():
+        from ..plugins.instagram_graph.plugin import InstagramGraphPlugin
+        return InstagramGraphPlugin()
+
     for loader, label in [
         (_load_youtube, "youtube"),
         (_load_instagram, "instagram"),
         (_load_reddit, "reddit"),
         (_load_vk, "vk"),
         (_load_telegram, "telegram"),
+        (_load_instagram_graph, "instagram_graph"),
     ]:
         p = _try_load(loader, label)
         if p is not None:

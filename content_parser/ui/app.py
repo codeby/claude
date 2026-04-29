@@ -94,7 +94,7 @@ def _sidebar(plugin) -> tuple[dict[str, str], dict]:
             secrets[k] = value
 
         # Optional shared secrets that some plugins use
-        for opt in ("WEBSHARE_USERNAME", "WEBSHARE_PASSWORD", "PROXY_HTTP_URL", "PROXY_HTTPS_URL", "OPENAI_API_KEY"):
+        for opt in ("WEBSHARE_USERNAME", "WEBSHARE_PASSWORD", "PROXY_HTTP_URL", "PROXY_HTTPS_URL", "OPENAI_API_KEY", "INSTAGRAM_ACCESS_TOKEN"):
             v = get_secret(opt)
             if v:
                 secrets[opt] = v
