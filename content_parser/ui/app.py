@@ -162,7 +162,96 @@ def _sidebar(plugin) -> tuple[dict[str, str], dict]:
                     )
 
         secrets.update({k: v for k, v in proxy_secrets.items() if v})
+
+        # ----- Google Sheets loader -----
+        st.divider()
+        _render_sheets_loader(plugin)
+
         return secrets, settings
+
+
+def _render_sheets_loader(plugin) -> None:
+    """Sidebar block: pull values from a Google Sheets range into an input tab."""
+    with st.expander("📥 Загрузить из Google Sheets", expanded=False):
+        st.caption(
+            "Сервис-аккаунт читает указанный диапазон. "
+            "Не забудь поделиться таблицей с email сервис-аккаунта."
+        )
+        creds = st.text_area(
+            "GOOGLE_SHEETS_CREDENTIALS (service account JSON)",
+            value=get_secret("GOOGLE_SHEETS_CREDENTIALS"),
+            height=80,
+            key="gs_creds",
+            help="Вставь содержимое JSON-файла ключа сервис-аккаунта.",
+        )
+
+        col_save, col_clear = st.columns(2)
+        with col_save:
+            if st.button("💾 Save creds", use_container_width=True, key="gs_save_creds"):
+                if creds.strip():
+                    save_secret("GOOGLE_SHEETS_CREDENTIALS", creds.strip())
+                    st.success("Сохранено")
+                else:
+                    st.warning("Сначала вставь JSON")
+        with col_clear:
+            if st.button("🗑️ Clear", use_container_width=True, key="gs_clear_creds"):
+                delete_secret("GOOGLE_SHEETS_CREDENTIALS")
+                st.session_state["gs_creds"] = ""
+                st.rerun()
+
+        sheet = st.text_input(
+            "URL или ID таблицы",
+            placeholder="https://docs.google.com/spreadsheets/d/...",
+            key="gs_sheet",
+        )
+        col_tab, col_range = st.columns([1, 1])
+        with col_tab:
+            tab_name = st.text_input("Лист (tab)", value="", key="gs_tab",
+                                     placeholder="например: Communities")
+        with col_range:
+            range_a1 = st.text_input("Диапазон A1", value="A:A", key="gs_range")
+        skip_header = st.checkbox("Пропустить первую строку (заголовок)", value=False, key="gs_skip_header")
+
+        target_kinds = [s.kind for s in plugin.input_specs()]
+        target_kind = st.selectbox(
+            f"Куда подставить (для плагина {plugin.label})",
+            target_kinds,
+            key="gs_target_kind",
+        )
+
+        if st.button("📥 Загрузить", use_container_width=True, key="gs_load"):
+            if not creds.strip():
+                st.error("Нужен JSON сервис-аккаунта.")
+                return
+            if not sheet.strip():
+                st.error("Укажи URL или ID таблицы.")
+                return
+
+            from ..loaders.gsheets import GoogleSheetsLoader
+
+            try:
+                loader = GoogleSheetsLoader(creds.strip())
+                loaded = loader.load(
+                    sheet.strip(),
+                    tab=tab_name.strip() or None,
+                    range_a1=range_a1.strip() or "A:A",
+                    skip_header=skip_header,
+                )
+            except Exception as e:
+                st.error(f"Ошибка загрузки: {e}")
+                return
+
+            input_key = f"input_{plugin.name}_{target_kind}"
+            existing = (st.session_state.get(input_key) or "").strip()
+            new_block = "\n".join(loaded.values)
+            merged = (existing + "\n" + new_block).strip() if existing else new_block
+            st.session_state[input_key] = merged
+
+            st.success(
+                f"Загружено {loaded.count} из «{loaded.sheet_title}» / "
+                f"«{loaded.tab_title}» → вкладка «{target_kind}»"
+            )
+            st.rerun()
 
 
 def _main_area(plugin) -> dict[str, list[str]]:
