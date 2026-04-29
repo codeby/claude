@@ -5,6 +5,7 @@ Filenames use `<source>_<item_id>_<title>` so multiple sources coexist in one fo
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import re
 from dataclasses import asdict
@@ -13,10 +14,13 @@ from pathlib import Path
 from .schema import Item
 
 
+_FALLBACK_FILENAME = "item"
+
+
 def _safe_filename(name: str, max_length: int = 80) -> str:
     cleaned = re.sub(r"[^\w\s-]", "", name, flags=re.UNICODE).strip()
     cleaned = re.sub(r"\s+", "_", cleaned)
-    return cleaned[:max_length] or "item"
+    return cleaned[:max_length] or _FALLBACK_FILENAME
 
 
 def _format_seconds(seconds: float) -> str:
@@ -27,17 +31,26 @@ def _format_seconds(seconds: float) -> str:
 
 
 def _file_stem(item: Item) -> str:
-    """Build a filesystem-safe stem.
+    """Build a filesystem-safe, collision-resistant stem.
 
-    Every component goes through _safe_filename, even though source and item_id
-    typically come from trusted internal strings — defense in depth against an
-    upstream API that returns a malicious id like '../../etc/passwd'.
+    Every component goes through _safe_filename — defense in depth against an
+    upstream API returning a malicious id like '../../etc/passwd'.
+
+    If the item_id sanitizes away to the fallback (e.g. all special chars), a
+    short hash of the raw (source, item_id) is appended so two such items
+    don't clobber each other on disk.
     """
-    return (
-        f"{_safe_filename(item.source)}"
-        f"_{_safe_filename(item.item_id)}"
-        f"_{_safe_filename(item.title or '')}"
-    )
+    safe_source = _safe_filename(item.source)
+    safe_id = _safe_filename(item.item_id)
+    safe_title = _safe_filename(item.title or "")
+
+    if safe_id == _FALLBACK_FILENAME:
+        digest = hashlib.sha256(
+            f"{item.source}\0{item.item_id}".encode("utf-8")
+        ).hexdigest()[:8]
+        safe_id = f"{_FALLBACK_FILENAME}-{digest}"
+
+    return f"{safe_source}_{safe_id}_{safe_title}"
 
 
 def write_item_json(item: Item, out_dir: Path) -> Path:

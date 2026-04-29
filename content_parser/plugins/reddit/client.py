@@ -20,12 +20,12 @@ def build_reddit(secrets: dict[str, str]) -> Any:
 
     client_id = secrets.get("REDDIT_CLIENT_ID")
     client_secret = secrets.get("REDDIT_CLIENT_SECRET")
-    user_agent = secrets.get("REDDIT_USER_AGENT")
+    user_agent = secrets.get("REDDIT_USER_AGENT", "")
 
     if not client_id or not client_secret:
         raise ValueError("REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET are required")
 
-    if not user_agent:
+    if not user_agent.strip():
         logger.warning(
             "REDDIT_USER_AGENT not set; falling back to %r. Reddit's API rules "
             "expect '<platform>:<app-id>:<version> by /u/<username>' — generic "

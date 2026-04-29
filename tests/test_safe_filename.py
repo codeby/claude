@@ -46,6 +46,29 @@ class SafeFilenameTest(unittest.TestCase):
         self.assertEqual(_safe_filename("///"), "item")
 
 
+class FileStemCollisionTest(unittest.TestCase):
+    """When item_id sanitizes to the fallback, a hash disambiguates."""
+
+    def test_collision_when_ids_sanitize_to_same_fallback(self):
+        a = Item(source="reddit", item_id="../../a", url="u", title="")
+        b = Item(source="reddit", item_id="../../b", url="u", title="")
+        self.assertNotEqual(_file_stem(a), _file_stem(b))
+
+    def test_normal_id_unchanged_no_hash(self):
+        item = Item(source="youtube", item_id="dQw4w9WgXcQ", url="u", title="x")
+        stem = _file_stem(item)
+        # stem should not contain the 'item-' fallback hash prefix
+        self.assertNotIn("item-", stem)
+        self.assertIn("dQw4w9WgXcQ", stem)
+
+    def test_fallback_id_gets_stable_hash(self):
+        item = Item(source="reddit", item_id="..", url="u", title="t")
+        stem1 = _file_stem(item)
+        stem2 = _file_stem(item)
+        self.assertEqual(stem1, stem2)
+        self.assertIn("item-", stem1)
+
+
 class FileStemPathTraversalTest(unittest.TestCase):
     """Even if an upstream API returns malicious source/item_id, files stay in out_dir."""
 

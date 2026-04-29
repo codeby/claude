@@ -34,6 +34,11 @@ class NormalizeSubredditTest(unittest.TestCase):
         with self.assertRaises(PluginError):
             self.p._normalize_subreddit("https://reddit.com/u/spez/")
 
+    def test_rejects_non_reddit_host_in_url(self):
+        # path looks valid but host is wrong → should be rejected
+        with self.assertRaises(PluginError):
+            self.p._normalize_subreddit("https://evil.example/r/python/")
+
 
 class NormalizeUserTest(unittest.TestCase):
     def setUp(self):
@@ -56,6 +61,10 @@ class NormalizeUserTest(unittest.TestCase):
     def test_rejects_too_short(self):
         with self.assertRaises(PluginError):
             self.p._normalize_user("ab")
+
+    def test_rejects_non_reddit_host_in_url(self):
+        with self.assertRaises(PluginError):
+            self.p._normalize_user("https://evil.example/u/spez/")
 
 
 class IsRedditPostUrlTest(unittest.TestCase):
@@ -188,15 +197,19 @@ class CommentCollectionTest(unittest.TestCase):
         out = self.p._collect_comments(sub, max_comments=3, depth="top_level", expand_more=False)
         self.assertEqual(len(out), 3)
 
-    def test_expand_more_true_passes_none(self):
+    def test_expand_more_true_passes_capped_limit(self):
+        from content_parser.plugins.reddit.plugin import _MAX_REPLACE_MORE
+
         called = []
         sub = self._submission_with_comments([], called)
         self.p._collect_comments(sub, max_comments=100, depth="top_level", expand_more=True)
-        self.assertEqual(called, [None])
+        # Should pass the hard cap, not None — unbounded expansion is unsafe.
+        self.assertEqual(called, [_MAX_REPLACE_MORE])
+        self.assertNotIn(None, called)
 
 
 class RedactSpecTest(unittest.TestCase):
-    """_redact_spec strips query strings and caps length so logs stay safe."""
+    """_redact_spec strips query/fragment and caps length so logs stay safe."""
 
     def test_strips_query_string(self):
         from content_parser.plugins.reddit.plugin import _redact_spec
@@ -204,6 +217,13 @@ class RedactSpecTest(unittest.TestCase):
         self.assertNotIn("token", out)
         self.assertNotIn("secret", out)
         self.assertIn("?…", out)
+
+    def test_strips_fragment(self):
+        from content_parser.plugins.reddit.plugin import _redact_spec
+        out = _redact_spec("post_url:https://reddit.com/x#access_token=xxx")
+        self.assertNotIn("access_token", out)
+        self.assertNotIn("xxx", out)
+        self.assertIn("#…", out)
 
     def test_truncates_long(self):
         from content_parser.plugins.reddit.plugin import _redact_spec
@@ -255,6 +275,23 @@ class UserAgentWarningTest(unittest.TestCase):
 
             kwargs = fake.Reddit.call_args.kwargs
             self.assertEqual(kwargs["user_agent"], "myapp:v1 by /u/me")
+
+    def test_whitespace_user_agent_treated_as_empty(self):
+        from unittest.mock import patch
+
+        fake = self._fake_praw_module()
+        with patch.dict("sys.modules", {"praw": fake}):
+            from content_parser.plugins.reddit.client import build_reddit, DEFAULT_USER_AGENT
+
+            with self.assertLogs("content_parser.plugins.reddit.client", level="WARNING"):
+                build_reddit({
+                    "REDDIT_CLIENT_ID": "x",
+                    "REDDIT_CLIENT_SECRET": "y",
+                    "REDDIT_USER_AGENT": "   ",
+                })
+
+            kwargs = fake.Reddit.call_args.kwargs
+            self.assertEqual(kwargs["user_agent"], DEFAULT_USER_AGENT)
 
 
 class FetchAuthGuardTest(unittest.TestCase):
@@ -316,6 +353,22 @@ class ListingDispatchTest(unittest.TestCase):
         ))
         reddit.submission.assert_called_once_with(url="https://reddit.com/r/x/comments/abc/")
         self.assertEqual(out[0].id, "p1")
+
+    def test_user_rising_falls_back_to_new_with_log(self):
+        # User submissions have no .rising(), so 'rising' should silently use .new()
+        # but emit an INFO log so the user knows.
+        reddit_mock = MagicMock()
+        user_subs = MagicMock()
+        user_subs.new.return_value = [SimpleNamespace(id="un1")]
+        reddit_mock.redditor.return_value = SimpleNamespace(submissions=user_subs)
+
+        with self.assertLogs("content_parser.plugins.reddit.plugin", level="INFO") as cm:
+            out = list(self.p._collect_submissions(
+                reddit_mock, "user", "spez", "rising", "month", 5
+            ))
+        user_subs.new.assert_called_once_with(limit=5)
+        self.assertEqual(out[0].id, "un1")
+        self.assertTrue(any("rising" in m and "new" in m for m in cm.output))
 
 
 if __name__ == "__main__":

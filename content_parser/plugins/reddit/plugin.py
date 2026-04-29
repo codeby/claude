@@ -1,6 +1,7 @@
 """Reddit plugin — posts and comments via PRAW (read-only)."""
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Iterable, Iterator
 from urllib.parse import urlparse
@@ -12,21 +13,37 @@ from .adapter import comment_to_core, submission_to_item
 from .client import build_reddit
 
 
+logger = logging.getLogger(__name__)
+
+
 _SUBREDDIT_RE = re.compile(r"^[A-Za-z0-9_]{1,21}$")
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,20}$")
+_REDDIT_HOSTS = ("reddit.com", "redd.it")
+# Hard cap on MoreComments expansions when expand_more=True. Each expansion
+# triggers a network round-trip and can pull ~250 extra comments, so an
+# unbounded replace_more(limit=None) easily produces minutes of work and
+# Reddit-side rate limits on big threads.
+_MAX_REPLACE_MORE = 32
 
 
 def _redact_spec(spec: str) -> str:
-    """Trim a spec for safe logging — drop query strings, cap to 80 chars.
+    """Trim a spec for safe logging — drop query/fragment, cap to 80 chars.
 
-    A user might paste a URL with a token in the query (?token=secret); never
-    send that to logs or exception messages verbatim.
+    A user might paste a URL with a token in the query (?token=...) or fragment
+    (#access_token=...); neither belongs in logs or exception messages.
     """
-    if "?" in spec:
-        spec = spec.split("?", 1)[0] + "?…"
+    for sep in ("?", "#"):
+        if sep in spec:
+            spec = spec.split(sep, 1)[0] + sep + "…"
+            break
     if len(spec) > 80:
         spec = spec[:77] + "…"
     return spec
+
+
+def _is_reddit_host(host: str) -> bool:
+    host = host.lower()
+    return any(host == h or host.endswith("." + h) for h in _REDDIT_HOSTS)
 
 
 class RedditPlugin(SourcePlugin):
@@ -219,11 +236,12 @@ class RedditPlugin(SourcePlugin):
             return list(source.new(limit=limit))
         if listing == "rising":
             if is_user:
-                return list(source.new(limit=limit))  # rising not on user submissions
+                logger.info(
+                    "Reddit user submissions don't expose 'rising'; using 'new' instead."
+                )
+                return list(source.new(limit=limit))
             return list(source.rising(limit=limit))
         # default 'hot'
-        if is_user:
-            return list(source.hot(limit=limit))
         return list(source.hot(limit=limit))
 
     @staticmethod
@@ -240,7 +258,9 @@ class RedditPlugin(SourcePlugin):
     def _collect_comments(
         sub: Any, *, max_comments: int, depth: str, expand_more: bool
     ) -> list:
-        sub.comments.replace_more(limit=None if expand_more else 0)
+        # When expand_more=True, cap at _MAX_REPLACE_MORE expansions instead of
+        # unbounded — see the constant for the rationale.
+        sub.comments.replace_more(limit=_MAX_REPLACE_MORE if expand_more else 0)
 
         out: list = []
 
@@ -272,7 +292,12 @@ class RedditPlugin(SourcePlugin):
     def _normalize_subreddit(cls, raw: str) -> str:
         v = raw.strip()
         if v.startswith("http"):
-            parts = [p for p in urlparse(v).path.split("/") if p]
+            parsed = urlparse(v)
+            if not _is_reddit_host(parsed.hostname or ""):
+                raise PluginError(
+                    f"{raw!r} is not a Reddit URL (host must be reddit.com or redd.it)."
+                )
+            parts = [p for p in parsed.path.split("/") if p]
             if len(parts) >= 2 and parts[0].lower() == "r":
                 v = parts[1]
             else:
@@ -291,12 +316,19 @@ class RedditPlugin(SourcePlugin):
     def _normalize_user(cls, raw: str) -> str:
         v = raw.strip()
         if v.startswith("http"):
-            parts = [p for p in urlparse(v).path.split("/") if p]
+            parsed = urlparse(v)
+            if not _is_reddit_host(parsed.hostname or ""):
+                raise PluginError(
+                    f"{raw!r} is not a Reddit URL (host must be reddit.com or redd.it)."
+                )
+            parts = [p for p in parsed.path.split("/") if p]
             if len(parts) >= 2 and parts[0].lower() in ("u", "user"):
                 v = parts[1]
             else:
                 raise PluginError(f"Cannot parse user URL: {raw!r}")
-        for prefix in ("/u/", "u/", "/user/", "user/", "@"):
+        # Note: the longer prefixes ('/user/', '/u/') must be checked before the
+        # shorter ones ('user/', 'u/'), and '@' last, so we don't strip too little.
+        for prefix in ("/user/", "/u/", "user/", "u/", "@"):
             if v.lower().startswith(prefix):
                 v = v[len(prefix):]
                 break
@@ -312,18 +344,10 @@ class RedditPlugin(SourcePlugin):
     def _is_reddit_post_url(url: str) -> bool:
         try:
             parsed = urlparse(url)
-            host = (parsed.hostname or "").lower()
             parts = [p for p in parsed.path.split("/") if p]
         except Exception:
             return False
-        # Exact host match — substring check would let 'evilreddit.com' through.
-        valid_host = (
-            host == "reddit.com"
-            or host.endswith(".reddit.com")
-            or host == "redd.it"
-            or host.endswith(".redd.it")
-        )
-        if not valid_host:
+        if not _is_reddit_host(parsed.hostname or ""):
             return False
         # Expected: /r/<sub>/comments/<id>/<slug>/
         return len(parts) >= 4 and parts[0].lower() == "r" and parts[2].lower() == "comments"
