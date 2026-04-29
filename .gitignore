@@ -6,3 +6,5 @@ venv/
 .streamlit/secrets.toml
 output/
 .youtube_parser_config.json
+.content_parser/
+.pytest_cache/

@@ -53,7 +53,10 @@ def _render_field(spec, key_prefix: str):
     if spec.widget == "checkbox":
         return st.checkbox(spec.label, value=bool(spec.default), help=spec.help, key=key)
     if spec.widget == "select":
-        opts = spec.options or [spec.default]
+        opts = list(spec.options) if spec.options else ([spec.default] if spec.default is not None else [])
+        if not opts:
+            # No options and no default — render a free-text fallback so the form still works.
+            return st.text_input(spec.label, value="", help=spec.help, key=key)
         idx = opts.index(spec.default) if spec.default in opts else 0
         return st.selectbox(spec.label, opts, index=idx, help=spec.help, key=key)
     return st.text_input(spec.label, value=str(spec.default or ""), key=key)
