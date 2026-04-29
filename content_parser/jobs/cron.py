@@ -24,6 +24,22 @@ BEGIN_MARKER = "# >>> content_parser jobs >>>"
 END_MARKER = "# <<< content_parser jobs <<<"
 
 
+def is_cron_available() -> bool:
+    """Probe for a usable `crontab` binary. Used by the UI to gray out the
+    cron-management buttons on hosts where crontab isn't installed
+    (e.g. Streamlit Cloud's container)."""
+    try:
+        subprocess.run(
+            ["crontab", "-l"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return True
+    except FileNotFoundError:
+        return False
+
+
 @dataclass
 class CronEntry:
     """One cron line as managed by us."""

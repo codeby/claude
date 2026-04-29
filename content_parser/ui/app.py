@@ -291,6 +291,214 @@ def _render_sheets_loader(plugin) -> None:
             st.rerun()
 
 
+def _render_jobs_panel(plugin, inputs: dict[str, list[str]], settings: dict) -> None:
+    """Schedule panel: list/run/edit/delete jobs + manage crontab block.
+
+    `inputs` and `settings` come from the active plugin's input tabs and are
+    used to seed the "create job from current state" form, so a user who
+    just configured a one-off run can persist it as a scheduled job.
+    """
+    from ..jobs import store as jobs_store
+    from ..jobs.cron import is_cron_available
+    from ..jobs.runner import run_job_obj
+    from ..jobs.schema import Job, dump_job_yaml, load_job_yaml
+
+    st.divider()
+    st.header("🕐 Расписание")
+    st.caption(
+        "Сохранённые job'ы переиспользуют твои inputs (вкл. Google Sheets) и "
+        "запускаются по cron'у или из CLI."
+    )
+
+    jobs = jobs_store.list_jobs()
+    invalid = jobs_store.list_invalid()
+
+    if not jobs:
+        st.info("Пока нет сохранённых job'ов. Создай первый ниже из текущего состояния.")
+    else:
+        for job in jobs:
+            schedule_label = f"⏰ `{job.schedule}`" if job.schedule else "✋ ручной запуск"
+            with st.expander(f"📋 {job.name} — {job.source} — {schedule_label}", expanded=False):
+                if job.description:
+                    st.caption(job.description)
+
+                col_run, col_edit, col_del = st.columns(3)
+                with col_run:
+                    if st.button("▶️ Запустить", key=f"run_{job.name}", use_container_width=True):
+                        with st.spinner(f"Прогон {job.name}…"):
+                            try:
+                                result = run_job_obj(job, log=lambda m: st.write(m))
+                                st.success(
+                                    f"Готово: {len(result.items)} item(s) в `{result.out_dir}`"
+                                )
+                            except Exception as e:
+                                st.error(f"Ошибка: {e}")
+                with col_edit:
+                    if st.button("✏️ Изменить", key=f"edit_{job.name}", use_container_width=True):
+                        st.session_state["editing_job"] = job.name
+                        st.rerun()
+                with col_del:
+                    if st.button("🗑️ Удалить", key=f"del_{job.name}", use_container_width=True):
+                        jobs_store.delete_job(job.name)
+                        st.rerun()
+
+                if st.session_state.get("editing_job") == job.name:
+                    edited = st.text_area(
+                        "YAML",
+                        value=dump_job_yaml(job),
+                        height=300,
+                        key=f"yaml_{job.name}",
+                    )
+                    save_col, cancel_col = st.columns(2)
+                    with save_col:
+                        if st.button("💾 Сохранить", key=f"save_yaml_{job.name}", use_container_width=True):
+                            try:
+                                new_job = load_job_yaml(edited, name_hint=job.name)
+                                jobs_store.save_job(new_job)
+                                st.session_state.pop("editing_job", None)
+                                st.success("Сохранено")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Ошибка: {e}")
+                    with cancel_col:
+                        if st.button("✕ Отмена", key=f"cancel_yaml_{job.name}", use_container_width=True):
+                            st.session_state.pop("editing_job", None)
+                            st.rerun()
+                else:
+                    st.markdown(f"**Inputs:**")
+                    if job.inputs:
+                        for kind, values in job.inputs.items():
+                            st.markdown(f"- `{kind}`: {len(values)} inline ({', '.join(values[:3])}{'…' if len(values) > 3 else ''})")
+                    if job.sheet_inputs:
+                        st.markdown("**Sheet inputs:**")
+                        for ref in job.sheet_inputs:
+                            st.markdown(
+                                f"- `{ref.target}` ← {ref.sheet[:40]}…  "
+                                f"tab=`{ref.tab or '(первый)'}`, range=`{ref.range_a1}`"
+                            )
+
+    if invalid:
+        with st.expander(f"⚠️ Невалидные YAML-файлы ({len(invalid)})", expanded=False):
+            for name, err in invalid:
+                st.markdown(f"- **{name}**: `{err}`")
+
+    # ----- Create job from current state -----
+    st.subheader("➕ Создать job из текущего состояния")
+    st.caption(
+        f"Источник: **{plugin.label}**. Inputs и settings возьмутся из текущего состояния "
+        "input-вкладок и параметров плагина."
+    )
+    new_name = st.text_input(
+        "Имя job'а", placeholder="weekly-vk-marketing", key="new_job_name",
+        help="Только буквы, цифры, `-` и `_`; до 64 символов.",
+    )
+    new_schedule = st.text_input(
+        "Расписание (cron, опц.)", placeholder="0 6 * * MON", key="new_job_schedule",
+    )
+    new_description = st.text_input(
+        "Описание (опц.)", placeholder="Топ постов из ниши маркетинг по понедельникам",
+        key="new_job_description",
+    )
+    if st.button("💾 Создать job", type="primary", use_container_width=True, key="new_job_create"):
+        non_empty = {k: v for k, v in inputs.items() if v}
+        if not new_name.strip():
+            st.error("Имя обязательно.")
+        elif not non_empty:
+            st.error("Сначала заполни input-вкладки.")
+        else:
+            try:
+                job = Job(
+                    name=new_name.strip(),
+                    source=plugin.name,
+                    inputs=non_empty,
+                    settings=dict(settings),
+                    schedule=new_schedule.strip() or None,
+                    description=new_description.strip() or None,
+                )
+                jobs_store.save_job(job)
+                st.success(
+                    f"Job `{job.name}` сохранён. Чтобы добавить sheet_inputs — "
+                    "открой ✏️ Изменить и допиши блок в YAML."
+                )
+                st.rerun()
+            except Exception as e:
+                st.error(f"Ошибка: {e}")
+
+    # ----- Cron block management -----
+    st.subheader("📅 Cron")
+    if not is_cron_available():
+        st.warning(
+            "На этом хосте `crontab` недоступен (например, Streamlit Cloud). "
+            "Используй **GitHub Actions cron** — рабочий шаблон ниже:"
+        )
+        st.code(
+            """\
+# .github/workflows/run-jobs.yml
+on:
+  schedule:
+    - cron: "0 6 * * MON"
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r requirements.txt
+      - run: python -m content_parser.cli jobs run <ИМЯ_JOB'А>
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN }}
+          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
+          VK_ACCESS_TOKEN: ${{ secrets.VK_ACCESS_TOKEN }}
+          GOOGLE_SHEETS_CREDENTIALS: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scheduled-output
+          path: output/scheduled/
+""",
+            language="yaml",
+        )
+        return
+
+    col_install, col_remove = st.columns(2)
+    with col_install:
+        if st.button("📅 Установить блок в crontab", use_container_width=True, key="cron_install"):
+            from ..jobs.cron import install_cron, CronError
+            try:
+                entries = install_cron()
+                if entries:
+                    st.success(f"Установлено {len(entries)} запис(ь/и):")
+                    for e in entries:
+                        st.write(f"`{e.schedule}` → {e.job_name}")
+                else:
+                    st.info("Нет джоб с расписанием — блок очищен.")
+            except CronError as e:
+                st.error(f"Ошибка: {e}")
+    with col_remove:
+        if st.button("❌ Удалить блок", use_container_width=True, key="cron_remove"):
+            from ..jobs.cron import remove_cron, CronError
+            try:
+                if remove_cron():
+                    st.success("Блок удалён.")
+                else:
+                    st.info("Блока в crontab нет.")
+            except CronError as e:
+                st.error(f"Ошибка: {e}")
+
+    try:
+        from ..jobs.cron import read_block
+        entries = read_block()
+        if entries:
+            st.markdown("**Сейчас в crontab:**")
+            for e in entries:
+                st.markdown(f"- `{e.schedule}` → **{e.job_name or '?'}**")
+    except Exception:
+        pass
+
+
 def _main_area(plugin) -> dict[str, list[str]]:
     st.title(f"🎬 Парсер контента — {plugin.label}")
     st.caption("Парсит метаданные, комментарии и (где возможно) транскрипты. Сохраняет JSON, Markdown и CSV.")
@@ -328,7 +536,7 @@ def main() -> None:
     inputs = _main_area(plugin)
 
     st.divider()
-    if st.button("▶️ Запустить", type="primary", use_container_width=True):
+    if st.button("▶️ Запустить (разово)", type="primary", use_container_width=True):
         non_empty = {k: v for k, v in inputs.items() if v}
         if not non_empty:
             st.error("Заполни хотя бы одну вкладку.")
@@ -363,6 +571,7 @@ def main() -> None:
             st.exception(e)
 
     _render_results()
+    _render_jobs_panel(plugin, inputs, settings)
 
 
 def _render_results() -> None:
