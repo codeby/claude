@@ -16,6 +16,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("list-sources", help="Show registered source plugins")
 
+    # ----- jobs subcommand -----
+    jobs_p = sub.add_parser("jobs", help="Manage scheduled jobs")
+    jobs_sub = jobs_p.add_subparsers(dest="jobs_command", required=True)
+    jobs_sub.add_parser("list", help="List all saved jobs")
+    show_p = jobs_sub.add_parser("show", help="Print a job's YAML")
+    show_p.add_argument("name")
+    run_job_p = jobs_sub.add_parser("run", help="Run a job once")
+    run_job_p.add_argument("name")
+    jobs_sub.add_parser("install-cron", help="Regenerate the managed crontab block")
+    jobs_sub.add_parser("remove-cron", help="Remove the managed crontab block")
+    jobs_sub.add_parser("cron-status", help="Show what's currently in the managed block")
+
     run_p = sub.add_parser("run", help="Resolve inputs and fetch items for one source")
     run_p.add_argument("--source", required=True, help="Plugin name (e.g. youtube, instagram)")
     run_p.add_argument("--output", "-o", default=None, help="Output directory")
@@ -132,12 +144,80 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_jobs(args: argparse.Namespace) -> int:
+    from .jobs import store as jobs_store  # noqa: PLC0415
+    from .jobs.runner import run_job  # noqa: PLC0415
+    from .jobs.schema import dump_job_yaml  # noqa: PLC0415
+
+    if args.jobs_command == "list":
+        jobs = jobs_store.list_jobs()
+        if not jobs:
+            print("No jobs found in", jobs_store.JOBS_DIR)
+            return 0
+        for job in jobs:
+            schedule = job.schedule or "(manual)"
+            inputs_summary = ", ".join(f"{k}={len(v)}" for k, v in job.inputs.items()) or "—"
+            sheet_count = len(job.sheet_inputs)
+            print(
+                f"{job.name:30s}  source={job.source:10s}  schedule={schedule:20s}  "
+                f"inline=[{inputs_summary}]  sheet_refs={sheet_count}"
+            )
+        invalid = jobs_store.list_invalid()
+        if invalid:
+            print()
+            print("Invalid job files:")
+            for name, err in invalid:
+                print(f"  {name}: {err}")
+        return 0
+
+    if args.jobs_command == "show":
+        job = jobs_store.load_job(args.name)
+        print(dump_job_yaml(job))
+        return 0
+
+    if args.jobs_command == "run":
+        result = run_job(args.name, log=print, progress=lambda d, t, m: print(f"  [{d}/{t}] {m}"))
+        print(f"\nDone. {len(result.items)} item(s) saved to {result.out_dir.resolve()}")
+        return 0
+
+    if args.jobs_command == "install-cron":
+        from .jobs.cron import install_cron  # noqa: PLC0415
+        entries = install_cron()
+        if not entries:
+            print("No scheduled jobs found. Managed block cleared.")
+            return 0
+        print(f"Installed {len(entries)} entrie(s) in crontab:")
+        for e in entries:
+            print(f"  {e.schedule}  {e.job_name}")
+        return 0
+
+    if args.jobs_command == "remove-cron":
+        from .jobs.cron import remove_cron  # noqa: PLC0415
+        removed = remove_cron()
+        print("Removed managed block." if removed else "Managed block not present.")
+        return 0
+
+    if args.jobs_command == "cron-status":
+        from .jobs.cron import read_block  # noqa: PLC0415
+        entries = read_block()
+        if not entries:
+            print("Managed block is empty or absent.")
+            return 0
+        for e in entries:
+            print(f"{e.schedule}  job:{e.job_name}\n  → {e.command}")
+        return 0
+
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.command == "list-sources":
         return cmd_list_sources()
     if args.command == "run":
         return cmd_run(args)
+    if args.command == "jobs":
+        return cmd_jobs(args)
     return 2
 
 
