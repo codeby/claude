@@ -172,32 +172,69 @@ def _sidebar(plugin) -> tuple[dict[str, str], dict]:
 
 def _render_sheets_loader(plugin) -> None:
     """Sidebar block: pull values from a Google Sheets range into an input tab."""
+    from ..loaders.gsheets import GoogleSheetsLoader
+
     with st.expander("📥 Загрузить из Google Sheets", expanded=False):
         st.caption(
-            "Сервис-аккаунт читает указанный диапазон. "
-            "Не забудь поделиться таблицей с email сервис-аккаунта."
-        )
-        creds = st.text_area(
-            "GOOGLE_SHEETS_CREDENTIALS (service account JSON)",
-            value=get_secret("GOOGLE_SHEETS_CREDENTIALS"),
-            height=80,
-            key="gs_creds",
-            help="Вставь содержимое JSON-файла ключа сервис-аккаунта.",
+            "⚠️ JSON содержит приватный ключ — не показывай экран другим. "
+            "Сервис-аккаунт нужно вручную добавить в шаринг таблицы."
         )
 
-        col_save, col_clear = st.columns(2)
-        with col_save:
-            if st.button("💾 Save creds", use_container_width=True, key="gs_save_creds"):
-                if creds.strip():
-                    save_secret("GOOGLE_SHEETS_CREDENTIALS", creds.strip())
-                    st.success("Сохранено")
-                else:
-                    st.warning("Сначала вставь JSON")
-        with col_clear:
-            if st.button("🗑️ Clear", use_container_width=True, key="gs_clear_creds"):
-                delete_secret("GOOGLE_SHEETS_CREDENTIALS")
-                st.session_state["gs_creds"] = ""
-                st.rerun()
+        # Show client_email summary if creds are already saved, instead of
+        # re-rendering the full JSON every page load.
+        saved_email: str | None = None
+        saved_creds = get_secret("GOOGLE_SHEETS_CREDENTIALS")
+        if saved_creds:
+            try:
+                saved_email = GoogleSheetsLoader.validate_credentials(saved_creds).get("client_email")
+            except Exception:
+                saved_email = None
+
+        if saved_email and not st.session_state.get("gs_replace_creds"):
+            st.success(f"✓ Учётка сохранена: `{saved_email}`")
+            st.caption("Поделись с этим email-ом каждой таблицей, которую парсишь.")
+            col_replace, col_clear = st.columns(2)
+            with col_replace:
+                if st.button("✏️ Заменить", use_container_width=True, key="gs_replace_creds_btn"):
+                    st.session_state["gs_replace_creds"] = True
+                    st.rerun()
+            with col_clear:
+                if st.button("🗑️ Удалить", use_container_width=True, key="gs_clear_creds"):
+                    delete_secret("GOOGLE_SHEETS_CREDENTIALS")
+                    st.session_state.pop("gs_creds", None)
+                    st.session_state.pop("gs_replace_creds", None)
+                    st.rerun()
+            creds_input = saved_creds  # used by load button below
+        else:
+            creds_input = st.text_area(
+                "GOOGLE_SHEETS_CREDENTIALS (service account JSON)",
+                value="" if st.session_state.get("gs_replace_creds") else (saved_creds or ""),
+                height=80,
+                key="gs_creds",
+                help="Вставь содержимое JSON-файла ключа сервис-аккаунта.",
+            )
+            col_save, col_cancel = st.columns(2)
+            with col_save:
+                if st.button("💾 Сохранить", use_container_width=True, key="gs_save_creds"):
+                    pasted = (creds_input or "").strip()
+                    if not pasted:
+                        st.warning("Сначала вставь JSON")
+                    else:
+                        try:
+                            parsed = GoogleSheetsLoader.validate_credentials(pasted)
+                        except Exception as e:
+                            st.error(f"JSON невалиден: {e}")
+                        else:
+                            save_secret("GOOGLE_SHEETS_CREDENTIALS", pasted)
+                            st.session_state.pop("gs_replace_creds", None)
+                            st.success(
+                                f"Сохранено. Поделись таблицей с: `{parsed.get('client_email')}`"
+                            )
+                            st.rerun()
+            with col_cancel:
+                if saved_creds and st.button("✕ Отмена", use_container_width=True, key="gs_cancel_replace"):
+                    st.session_state.pop("gs_replace_creds", None)
+                    st.rerun()
 
         sheet = st.text_input(
             "URL или ID таблицы",
@@ -220,23 +257,23 @@ def _render_sheets_loader(plugin) -> None:
         )
 
         if st.button("📥 Загрузить", use_container_width=True, key="gs_load"):
-            if not creds.strip():
+            creds_value = (creds_input or "").strip() if creds_input else ""
+            if not creds_value:
                 st.error("Нужен JSON сервис-аккаунта.")
                 return
             if not sheet.strip():
                 st.error("Укажи URL или ID таблицы.")
                 return
 
-            from ..loaders.gsheets import GoogleSheetsLoader
-
             try:
-                loader = GoogleSheetsLoader(creds.strip())
-                loaded = loader.load(
-                    sheet.strip(),
-                    tab=tab_name.strip() or None,
-                    range_a1=range_a1.strip() or "A:A",
-                    skip_header=skip_header,
-                )
+                with st.spinner("Читаю таблицу…"):
+                    loader = GoogleSheetsLoader(creds_value)
+                    loaded = loader.load(
+                        sheet.strip(),
+                        tab=tab_name.strip() or None,
+                        range_a1=range_a1.strip() or "A:A",
+                        skip_header=skip_header,
+                    )
             except Exception as e:
                 st.error(f"Ошибка загрузки: {e}")
                 return

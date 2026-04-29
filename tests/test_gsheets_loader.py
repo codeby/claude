@@ -41,6 +41,19 @@ class CredentialsValidationTest(unittest.TestCase):
             GoogleSheetsLoader(json.dumps(bad))
         self.assertIn("private_key", str(cm.exception))
 
+    def test_oauth_client_json_rejected(self):
+        # OAuth client credentials have type=authorized_user, not service_account.
+        # We refuse them with a clear message instead of confusing field-missing errors.
+        oauth_client = {
+            "type": "authorized_user",
+            "client_id": "...",
+            "client_secret": "...",
+            "refresh_token": "...",
+        }
+        with self.assertRaises(AuthError) as cm:
+            GoogleSheetsLoader(json.dumps(oauth_client))
+        self.assertIn("service account", str(cm.exception).lower())
+
     def test_from_secrets_missing_token(self):
         with self.assertRaises(AuthError):
             GoogleSheetsLoader.from_secrets({})
@@ -60,6 +73,14 @@ class CredentialsValidationTest(unittest.TestCase):
                 loader.service_account_email(),
                 "bot@project.iam.gserviceaccount.com",
             )
+
+    def test_validate_credentials_does_not_build_client(self):
+        # Crucial property for the UI: we want to validate freshly-pasted JSON
+        # before saving, without touching the network. _build_client must not run.
+        with patch.object(GoogleSheetsLoader, "_build_client") as bc:
+            parsed = GoogleSheetsLoader.validate_credentials(json.dumps(VALID_CREDS))
+            bc.assert_not_called()
+            self.assertEqual(parsed["client_email"], VALID_CREDS["client_email"])
 
 
 class SheetIdExtractionTest(unittest.TestCase):
@@ -84,6 +105,31 @@ class SheetIdExtractionTest(unittest.TestCase):
     def test_garbage_raises(self):
         with self.assertRaises(PluginError):
             GoogleSheetsLoader._extract_sheet_id("not-a-url-or-id")
+
+    def test_non_google_host_rejected(self):
+        # Critical: a URL with /d/<id>/ on a non-google host must NOT be accepted.
+        # The previous version silently extracted the ID, which was confusing.
+        sheet_id = "1AbC2DeFG_HiJkLmNoPqRsTuVwXyZ-1234567890"
+        with self.assertRaises(PluginError) as cm:
+            GoogleSheetsLoader._extract_sheet_id(
+                f"https://evil.example/spreadsheets/d/{sheet_id}/edit"
+            )
+        self.assertIn("docs.google.com", str(cm.exception).lower())
+
+    def test_lookalike_host_rejected(self):
+        sheet_id = "1AbC2DeFG_HiJkLmNoPqRsTuVwXyZ-1234567890"
+        with self.assertRaises(PluginError):
+            GoogleSheetsLoader._extract_sheet_id(
+                f"https://evildocs.google.com.attacker.com/spreadsheets/d/{sheet_id}/edit"
+            )
+
+    def test_other_google_subdomain_rejected(self):
+        # mail.google.com /spreadsheets/d/... shouldn't sneak through either.
+        sheet_id = "1AbC2DeFG_HiJkLmNoPqRsTuVwXyZ-1234567890"
+        with self.assertRaises(PluginError):
+            GoogleSheetsLoader._extract_sheet_id(
+                f"https://mail.google.com/spreadsheets/d/{sheet_id}/"
+            )
 
 
 class LoadTest(unittest.TestCase):
@@ -201,6 +247,26 @@ class LoadTest(unittest.TestCase):
         loader.load("ID" * 10, range_a1="A:A")
         # We didn't pass tab=, so it should NOT call .worksheet(), only access .sheet1
         spreadsheet.worksheet.assert_not_called()
+
+    def test_empty_string_tab_falls_back_to_first_sheet(self):
+        # Cron configs may pass tab="" rather than tab=None.
+        loader, gc = self._build_loader()
+        spreadsheet, worksheet = self._wire_worksheet(gc, rows=[["x"]])
+        loader.load("ID" * 10, tab="", range_a1="A:A")
+        spreadsheet.worksheet.assert_not_called()
+
+    def test_whitespace_tab_falls_back(self):
+        loader, gc = self._build_loader()
+        spreadsheet, worksheet = self._wire_worksheet(gc, rows=[["x"]])
+        loader.load("ID" * 10, tab="   ", range_a1="A:A")
+        spreadsheet.worksheet.assert_not_called()
+
+    def test_loaded_range_has_no_raw_rows_attr(self):
+        # raw_rows was dropped — make sure nothing accidentally re-adds it.
+        loader, gc = self._build_loader()
+        self._wire_worksheet(gc, rows=[["x"]])
+        result = loader.load("ID" * 10, range_a1="A:A")
+        self.assertFalse(hasattr(result, "raw_rows"))
 
 
 if __name__ == "__main__":

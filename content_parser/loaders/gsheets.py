@@ -41,7 +41,6 @@ class LoadedRange:
     range_a1: str
     values: list[str]
     sheet_url: str
-    raw_rows: list[list[str]] = field(default_factory=list)
 
     @property
     def count(self) -> int:
@@ -52,6 +51,16 @@ class GoogleSheetsLoader:
     """Thin wrapper around gspread for read-only sheet access."""
 
     def __init__(self, credentials_json: dict | str):
+        self._credentials_json = self.validate_credentials(credentials_json)
+        self._gc = self._build_client()
+
+    @staticmethod
+    def validate_credentials(credentials_json: dict | str) -> dict:
+        """Parse + shape-check service account JSON. Raises AuthError on bad input.
+
+        Does NOT build a gspread client — safe to call without network.
+        Returns the parsed dict for the caller to reuse.
+        """
         if isinstance(credentials_json, str):
             try:
                 credentials_json = json.loads(credentials_json)
@@ -63,15 +72,19 @@ class GoogleSheetsLoader:
 
         if not isinstance(credentials_json, dict):
             raise AuthError("GOOGLE_SHEETS_CREDENTIALS must be a JSON object.")
-        for required in ("type", "client_email", "private_key"):
-            if required not in credentials_json:
+        if credentials_json.get("type") != "service_account":
+            raise AuthError(
+                "GOOGLE_SHEETS_CREDENTIALS is not a service account JSON "
+                "(missing or wrong 'type' field). OAuth client JSONs won't work — "
+                "use a service account key."
+            )
+        for required in ("client_email", "private_key"):
+            if not credentials_json.get(required):
                 raise AuthError(
                     f"GOOGLE_SHEETS_CREDENTIALS missing field {required!r} — "
                     "is this a service account JSON?"
                 )
-
-        self._credentials_json = credentials_json
-        self._gc = self._build_client()
+        return credentials_json
 
     @classmethod
     def from_secrets(cls, secrets: dict[str, str]) -> GoogleSheetsLoader:
@@ -116,7 +129,7 @@ class GoogleSheetsLoader:
         """Read a range from a sheet, return a flat list of non-empty values.
 
         sheet: spreadsheet ID or full URL.
-        tab: worksheet (tab) name. If None, uses the first sheet.
+        tab: worksheet (tab) name. None or empty string → first sheet.
         range_a1: A1 notation. Defaults to entire column A.
         skip_header: drop the first row (e.g. when header is in row 1).
         """
@@ -125,6 +138,11 @@ class GoogleSheetsLoader:
             raise PluginError(
                 f"Invalid range {range_a1!r}. Use A1 notation, e.g. 'A2:A100' or 'A:A'."
             )
+
+        # Defensive: callers (cron config, CLI) may pass empty string for "first sheet".
+        tab = tab.strip() if isinstance(tab, str) else tab
+        if not tab:
+            tab = None
 
         try:
             spreadsheet = self._gc.open_by_key(sheet_id)
@@ -164,7 +182,6 @@ class GoogleSheetsLoader:
             range_a1=range_a1,
             values=values,
             sheet_url=f"https://docs.google.com/spreadsheets/d/{sheet_id}",
-            raw_rows=[[c for c in row] for row in rows],
         )
 
     # ------------------------------------------------------------------
@@ -175,19 +192,26 @@ class GoogleSheetsLoader:
         v = (sheet or "").strip()
         if not v:
             raise PluginError("Sheet ID or URL is required.")
-        # Already an ID
+
+        # Bare ID (no URL).
         if _BARE_SHEET_ID_RE.match(v):
             return v
-        # URL form
-        m = _URL_SHEET_ID_RE.search(v)
-        if m:
-            return m.group(1)
-        # Try urlparse for tolerance (e.g. user pasted with extra params)
-        parsed = urlparse(v)
-        if parsed.hostname and parsed.hostname.endswith("google.com"):
+
+        # URL form: validate host strictly first, then pull the ID from the path.
+        # Without the host check, a URL like https://evil.com/spreadsheets/d/<id>/
+        # would silently get its `/d/<id>/` substring matched and accepted.
+        if v.lower().startswith(("http://", "https://")):
+            parsed = urlparse(v)
+            host = (parsed.hostname or "").lower()
+            if host != "docs.google.com":
+                raise PluginError(
+                    f"Cannot extract spreadsheet ID from {v!r}. "
+                    "URL host must be docs.google.com."
+                )
             m = _URL_SHEET_ID_RE.search(parsed.path)
             if m:
                 return m.group(1)
+
         raise PluginError(
             f"Cannot extract spreadsheet ID from {v!r}. "
             "Expected a docs.google.com/spreadsheets/d/<ID>/... URL or the ID itself."
