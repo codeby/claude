@@ -154,13 +154,10 @@ class InstagramGraphPlugin(SourcePlugin):
         total = len(unique)
         for i, (media, owner) in enumerate(unique, 1):
             # Insights: separate call to /{media-id}/insights.
-            if fetch_insights:
-                insights_data = self._fetch_insights(client, media)
-                if insights_data:
-                    media["insights"] = {"data": insights_data}
+            insights_data = self._fetch_insights(client, media) if fetch_insights else None
 
             try:
-                item = media_to_item(media, owner_username=owner)
+                item = media_to_item(media, owner_username=owner, insights=insights_data)
             except Exception as e:
                 item = Item(
                     source="instagram_graph",
@@ -253,9 +250,10 @@ class InstagramGraphPlugin(SourcePlugin):
         if not media_id:
             return None
         media_type = (media.get("media_type") or "").upper()
-        # Reels use a different metric set than feed posts.
-        is_reel = media_type == "REEL" or media_type == "VIDEO" and (
-            media.get("media_product_type") == "REELS"
+        # Reels use a different metric set than feed posts. Parens make the
+        # precedence explicit: REEL OR (VIDEO AND product_type=REELS).
+        is_reel = (media_type == "REEL") or (
+            media_type == "VIDEO" and media.get("media_product_type") == "REELS"
         )
         metrics = _REEL_INSIGHT_METRICS if is_reel else _POST_INSIGHT_METRICS
         try:

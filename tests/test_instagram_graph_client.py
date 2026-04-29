@@ -100,6 +100,22 @@ class GraphClientRetryTest(unittest.TestCase):
         self.assertEqual(result, {"id": "ok"})
         self.assertEqual(sleeps, [2.0])
 
+    def test_retries_on_5xx_then_succeeds(self):
+        sleeps: list[float] = []
+        responses = [
+            _resp({}, status=500, ok=False),
+            _resp({}, status=503, ok=False),
+            _resp({"id": "ok"}),
+        ]
+        session = MagicMock()
+        session.get.side_effect = responses
+        with patch("content_parser.plugins.instagram_graph.client.requests.Session",
+                   return_value=session), \
+             patch.object(GraphClient, "_sleep", staticmethod(lambda s: sleeps.append(s))):
+            result = GraphClient("x").get("me")
+        self.assertEqual(result, {"id": "ok"})
+        self.assertEqual(sleeps, [2.0, 4.0])
+
     def test_exhausts_retries_then_raises(self):
         responses = [_resp({"error": {"code": 4, "message": "rate"}}, status=429, ok=False)] * 5
         session = MagicMock()
@@ -111,6 +127,45 @@ class GraphClientRetryTest(unittest.TestCase):
                 GraphClient("x", max_rate_limit_retries=2).get("me")
         # 1 initial + 2 retries = 3
         self.assertEqual(session.get.call_count, 3)
+
+
+class GraphClientTokenRedactionTest(unittest.TestCase):
+    """Network errors must not leak the access token in their messages."""
+
+    def test_request_exception_message_redacted(self):
+        import requests as rq
+        # Simulate the kind of message requests sometimes produces, which
+        # contains the full URL with ?access_token=… in the query string.
+        leaked_url = "https://graph.facebook.com/v19.0/me?access_token=SECRET&fields=username"
+        exc = rq.RequestException(f"ConnectionError(...) at {leaked_url}")
+
+        session = MagicMock()
+        session.get.side_effect = exc
+        with patch("content_parser.plugins.instagram_graph.client.requests.Session",
+                   return_value=session), \
+             patch.object(GraphClient, "_sleep"):
+            client = GraphClient("SECRET")
+            with self.assertRaises(PluginError) as cm:
+                client.get("me")
+        msg = str(cm.exception)
+        self.assertNotIn("SECRET", msg)
+        self.assertIn("[REDACTED]", msg)
+
+    def test_token_not_in_chained_traceback(self):
+        # Even with `from None`, ensure no chained __cause__ retains the secret.
+        import requests as rq
+        exc = rq.RequestException("error: token=MYSECRET")
+        session = MagicMock()
+        session.get.side_effect = exc
+        with patch("content_parser.plugins.instagram_graph.client.requests.Session",
+                   return_value=session), \
+             patch.object(GraphClient, "_sleep"):
+            try:
+                GraphClient("MYSECRET").get("me")
+            except PluginError as raised:
+                # Cause should be None due to `raise ... from None`
+                self.assertIsNone(raised.__cause__)
+                self.assertNotIn("MYSECRET", str(raised))
 
 
 class GraphClientPaginationTest(unittest.TestCase):

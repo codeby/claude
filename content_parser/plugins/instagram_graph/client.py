@@ -89,12 +89,18 @@ class GraphClient:
             next_url = (data.get("paging") or {}).get("next")
             if not next_url:
                 break
-            # The 'next' URL already contains access_token in the query; we replay it
-            # verbatim through `_get_url` which strips the query and re-adds the token
-            # we control (in case the embedded token is different from ours).
+            # The 'next' URL embeds an access_token in its query. We strip it and
+            # let _get_once inject our own — defends against a (theoretical)
+            # man-in-the-middle swap of next URLs to a different token.
             current_path = self._next_path_from_url(next_url)
             current_params = self._next_params_from_url(next_url)
         return items
+
+    def _redact(self, message: str) -> str:
+        """Replace the access token with [REDACTED] in any error string."""
+        if self.token and self.token in message:
+            return message.replace(self.token, "[REDACTED]")
+        return message
 
     # ------------------------------------------------------------------
 
@@ -105,7 +111,11 @@ class GraphClient:
         try:
             r = self.session.get(url, params=params, timeout=self.timeout)
         except requests.RequestException as e:
-            raise PluginError(f"Network error calling Graph API: {e}") from e
+            # requests sometimes embeds the full URL — including ?access_token=… —
+            # in its exception message. Scrub before propagating.
+            raise PluginError(
+                f"Network error calling Graph API: {self._redact(str(e))}"
+            ) from None
 
         if r.status_code in (200, 201):
             try:

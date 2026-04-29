@@ -169,6 +169,69 @@ class FetchDispatchTest(unittest.TestCase):
             args = call.args
             self.assertNotIn("insights", args[0])
 
+    def test_insights_metric_selection_for_reel_vs_post(self):
+        """Reels use plays/total_interactions; feed posts use impressions."""
+        client = MagicMock()
+        captured_metrics = []
+
+        def get_side(path, params=None):
+            if path.endswith("/insights"):
+                captured_metrics.append(params.get("metric"))
+                return {"data": []}
+            if path == VALID_POST_ID:
+                # Two consecutive calls for two different scenarios — the test
+                # asks for posts in two separate fetch calls.
+                return reel_media if "reel_call" in params else feed_media
+            return {}
+
+        # Use simple branches: dispatch based on which call we're making.
+        reel_media = {
+            "id": VALID_POST_ID, "media_type": "REEL", "caption": "r",
+            "permalink": "https://insta/r",
+        }
+        feed_media = {
+            "id": VALID_POST_ID, "media_type": "IMAGE", "caption": "f",
+            "permalink": "https://insta/p",
+        }
+
+        # Reel scenario
+        client.get.side_effect = lambda path, params=None: (
+            reel_media if path == VALID_POST_ID else (
+                ({"data": []}, captured_metrics.append(params.get("metric")))[0]
+                if path.endswith("/insights") else {}
+            )
+        )
+        client.get_paginated.return_value = []
+        with patch("content_parser.plugins.instagram_graph.plugin.GraphClient", return_value=client):
+            list(self.p.fetch(
+                [f"post:{VALID_POST_ID}"],
+                {"fetch_insights": True, "fetch_comments": False},
+                self.secrets,
+            ))
+        self.assertEqual(len(captured_metrics), 1)
+        # Reel metric set
+        self.assertIn("plays", captured_metrics[0])
+        self.assertIn("total_interactions", captured_metrics[0])
+
+        # Feed-post scenario
+        captured_metrics.clear()
+        client.get.side_effect = lambda path, params=None: (
+            feed_media if path == VALID_POST_ID else (
+                ({"data": []}, captured_metrics.append(params.get("metric")))[0]
+                if path.endswith("/insights") else {}
+            )
+        )
+        with patch("content_parser.plugins.instagram_graph.plugin.GraphClient", return_value=client):
+            list(self.p.fetch(
+                [f"post:{VALID_POST_ID}"],
+                {"fetch_insights": True, "fetch_comments": False},
+                self.secrets,
+            ))
+        self.assertEqual(len(captured_metrics), 1)
+        # Feed-post metric set — has impressions, no plays
+        self.assertIn("impressions", captured_metrics[0])
+        self.assertNotIn("plays", captured_metrics[0])
+
     def test_insights_failure_does_not_break_run(self):
         media = {
             "id": VALID_POST_ID, "media_type": "REEL", "caption": "x",

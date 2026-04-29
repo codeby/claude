@@ -6,11 +6,19 @@ from typing import Any
 from ...core.schema import Comment, Item
 
 
-def media_to_item(media: dict, *, owner_username: str | None = None) -> Item:
+def media_to_item(
+    media: dict,
+    *,
+    owner_username: str | None = None,
+    insights: list[dict] | dict | None = None,
+) -> Item:
     """Convert a Graph API media object (post / reel / carousel) to core.Item.
 
     Comments are NOT populated here — the plugin attaches them after a
     separate /{media-id}/comments call to keep paging explicit.
+
+    `insights` (when provided) overrides anything embedded in `media["insights"]`.
+    Pass it explicitly so the caller doesn't need to mutate the media dict.
     """
     if not media.get("id"):
         raise ValueError(
@@ -18,7 +26,7 @@ def media_to_item(media: dict, *, owner_username: str | None = None) -> Item:
         )
 
     media_type = media.get("media_type")  # IMAGE / VIDEO / CAROUSEL_ALBUM / REEL
-    insights = _flatten_insights(media.get("insights"))
+    insights_flat = _flatten_insights(insights if insights is not None else media.get("insights"))
 
     media_dict: dict[str, Any] = {
         "media_type": media_type,
@@ -29,13 +37,13 @@ def media_to_item(media: dict, *, owner_username: str | None = None) -> Item:
         "thumbnail_url": media.get("thumbnail_url"),
         "permalink": media.get("permalink"),
         # Reel/post insight metrics, when fetched.
-        "plays": insights.get("plays"),
-        "reach": insights.get("reach"),
-        "impressions": insights.get("impressions"),
-        "saved": insights.get("saved"),
-        "shares": insights.get("shares"),
-        "total_interactions": insights.get("total_interactions"),
-        "video_views": insights.get("video_views"),
+        "plays": insights_flat.get("plays"),
+        "reach": insights_flat.get("reach"),
+        "impressions": insights_flat.get("impressions"),
+        "saved": insights_flat.get("saved"),
+        "shares": insights_flat.get("shares"),
+        "total_interactions": insights_flat.get("total_interactions"),
+        "video_views": insights_flat.get("video_views"),
     }
     media_dict = {k: v for k, v in media_dict.items() if v not in (None, "")}
 
