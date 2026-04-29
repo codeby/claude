@@ -16,6 +16,19 @@ _SUBREDDIT_RE = re.compile(r"^[A-Za-z0-9_]{1,21}$")
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,20}$")
 
 
+def _redact_spec(spec: str) -> str:
+    """Trim a spec for safe logging — drop query strings, cap to 80 chars.
+
+    A user might paste a URL with a token in the query (?token=secret); never
+    send that to logs or exception messages verbatim.
+    """
+    if "?" in spec:
+        spec = spec.split("?", 1)[0] + "?…"
+    if len(spec) > 80:
+        spec = spec[:77] + "…"
+    return spec
+
+
 class RedditPlugin(SourcePlugin):
     name = "reddit"
     label = "Reddit"
@@ -135,7 +148,9 @@ class RedditPlugin(SourcePlugin):
                     reddit, kind, value, listing, time_filter, max_posts
                 ))
             except Exception as e:
-                raise PluginError(f"Reddit error for {spec!r}: {e}") from e
+                raise PluginError(
+                    f"Reddit error for {_redact_spec(spec)!r}: {e}"
+                ) from e
 
         # Dedupe by submission id (same post can come from multiple inputs).
         seen: set[str] = set()
@@ -296,11 +311,19 @@ class RedditPlugin(SourcePlugin):
     @staticmethod
     def _is_reddit_post_url(url: str) -> bool:
         try:
-            host = urlparse(url).hostname or ""
-            parts = [p for p in urlparse(url).path.split("/") if p]
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").lower()
+            parts = [p for p in parsed.path.split("/") if p]
         except Exception:
             return False
-        if "reddit.com" not in host and "redd.it" not in host:
+        # Exact host match — substring check would let 'evilreddit.com' through.
+        valid_host = (
+            host == "reddit.com"
+            or host.endswith(".reddit.com")
+            or host == "redd.it"
+            or host.endswith(".redd.it")
+        )
+        if not valid_host:
             return False
         # Expected: /r/<sub>/comments/<id>/<slug>/
         return len(parts) >= 4 and parts[0].lower() == "r" and parts[2].lower() == "comments"

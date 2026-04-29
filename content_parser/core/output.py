@@ -27,7 +27,17 @@ def _format_seconds(seconds: float) -> str:
 
 
 def _file_stem(item: Item) -> str:
-    return f"{item.source}_{item.item_id}_{_safe_filename(item.title or '')}"
+    """Build a filesystem-safe stem.
+
+    Every component goes through _safe_filename, even though source and item_id
+    typically come from trusted internal strings — defense in depth against an
+    upstream API that returns a malicious id like '../../etc/passwd'.
+    """
+    return (
+        f"{_safe_filename(item.source)}"
+        f"_{_safe_filename(item.item_id)}"
+        f"_{_safe_filename(item.title or '')}"
+    )
 
 
 def write_item_json(item: Item, out_dir: Path) -> Path:

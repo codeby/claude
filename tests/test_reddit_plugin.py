@@ -75,6 +75,21 @@ class IsRedditPostUrlTest(unittest.TestCase):
             "https://example.com/r/python/comments/abc/title/"
         ))
 
+    def test_lookalike_host_rejected(self):
+        # 'reddit.com' as substring of a different domain must not pass.
+        self.assertFalse(self.p._is_reddit_post_url(
+            "https://evilreddit.com/r/python/comments/abc/title/"
+        ))
+        self.assertFalse(self.p._is_reddit_post_url(
+            "https://reddit.com.evil.example/r/python/comments/abc/title/"
+        ))
+
+    def test_subdomain_accepted(self):
+        # Real Reddit subdomains like old.reddit.com should pass
+        self.assertTrue(self.p._is_reddit_post_url(
+            "https://old.reddit.com/r/python/comments/abc/title/"
+        ))
+
 
 class ResolveTest(unittest.TestCase):
     def setUp(self):
@@ -178,6 +193,68 @@ class CommentCollectionTest(unittest.TestCase):
         sub = self._submission_with_comments([], called)
         self.p._collect_comments(sub, max_comments=100, depth="top_level", expand_more=True)
         self.assertEqual(called, [None])
+
+
+class RedactSpecTest(unittest.TestCase):
+    """_redact_spec strips query strings and caps length so logs stay safe."""
+
+    def test_strips_query_string(self):
+        from content_parser.plugins.reddit.plugin import _redact_spec
+        out = _redact_spec("post_url:https://reddit.com/r/x/?token=secret&foo=1")
+        self.assertNotIn("token", out)
+        self.assertNotIn("secret", out)
+        self.assertIn("?…", out)
+
+    def test_truncates_long(self):
+        from content_parser.plugins.reddit.plugin import _redact_spec
+        spec = "subreddit:" + "a" * 200
+        out = _redact_spec(spec)
+        self.assertLessEqual(len(out), 80)
+        self.assertTrue(out.endswith("…"))
+
+    def test_short_unchanged(self):
+        from content_parser.plugins.reddit.plugin import _redact_spec
+        self.assertEqual(_redact_spec("subreddit:python"), "subreddit:python")
+
+
+class UserAgentWarningTest(unittest.TestCase):
+    """build_reddit warns when REDDIT_USER_AGENT is missing."""
+
+    def _fake_praw_module(self):
+        fake = MagicMock()
+        fake.Reddit.return_value = MagicMock()
+        return fake
+
+    def test_warns_when_user_agent_missing(self):
+        from unittest.mock import patch
+
+        fake = self._fake_praw_module()
+        with patch.dict("sys.modules", {"praw": fake}):
+            from content_parser.plugins.reddit.client import build_reddit, DEFAULT_USER_AGENT
+
+            with self.assertLogs("content_parser.plugins.reddit.client", level="WARNING") as cm:
+                build_reddit({"REDDIT_CLIENT_ID": "x", "REDDIT_CLIENT_SECRET": "y"})
+
+            self.assertTrue(any("REDDIT_USER_AGENT" in line for line in cm.output))
+            kwargs = fake.Reddit.call_args.kwargs
+            self.assertEqual(kwargs["user_agent"], DEFAULT_USER_AGENT)
+
+    def test_no_warning_when_set(self):
+        from unittest.mock import patch
+
+        fake = self._fake_praw_module()
+        with patch.dict("sys.modules", {"praw": fake}):
+            from content_parser.plugins.reddit.client import build_reddit
+
+            with self.assertNoLogs("content_parser.plugins.reddit.client", level="WARNING"):
+                build_reddit({
+                    "REDDIT_CLIENT_ID": "x",
+                    "REDDIT_CLIENT_SECRET": "y",
+                    "REDDIT_USER_AGENT": "myapp:v1 by /u/me",
+                })
+
+            kwargs = fake.Reddit.call_args.kwargs
+            self.assertEqual(kwargs["user_agent"], "myapp:v1 by /u/me")
 
 
 class FetchAuthGuardTest(unittest.TestCase):
