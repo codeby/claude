@@ -160,6 +160,174 @@ class FetchAuthGuardTest(unittest.TestCase):
             list(p.fetch(["community:durov_says"], {}, {}))
 
 
+class RetryOnRateLimitTest(unittest.TestCase):
+    """VKClient retries with exponential backoff on RateLimitError before giving up."""
+
+    def _mock_response(self, payload, ok=True, status=200):
+        m = MagicMock()
+        m.ok = ok
+        m.status_code = status
+        m.json.return_value = payload
+        return m
+
+    def test_retries_then_succeeds(self):
+        from content_parser.plugins.vk.client import VKClient
+
+        sleeps: list[float] = []
+        rate_limit_payload = {"error": {"error_code": 6, "error_msg": "Too many requests per second"}}
+        success_payload = {"response": {"items": []}}
+
+        with patch("content_parser.plugins.vk.client.requests.Session") as MockSession, \
+             patch.object(VKClient, "_sleep", staticmethod(lambda s: sleeps.append(s))):
+            session = MagicMock()
+            session.post.side_effect = [
+                self._mock_response(rate_limit_payload),
+                self._mock_response(rate_limit_payload),
+                self._mock_response(success_payload),
+            ]
+            MockSession.return_value = session
+
+            client = VKClient("x")
+            resp = client.call("groups.search", q="x")
+
+            self.assertEqual(session.post.call_count, 3)
+            self.assertEqual(resp, {"items": []})
+            self.assertEqual(sleeps, [1.0, 2.0])  # exponential backoff
+
+    def test_gives_up_after_max_retries(self):
+        from content_parser.plugins.vk.client import VKClient
+
+        rate_limit_payload = {"error": {"error_code": 6, "error_msg": "x"}}
+
+        with patch("content_parser.plugins.vk.client.requests.Session") as MockSession, \
+             patch.object(VKClient, "_sleep", staticmethod(lambda s: None)):
+            session = MagicMock()
+            session.post.return_value = self._mock_response(rate_limit_payload)
+            MockSession.return_value = session
+
+            client = VKClient("x", max_rate_limit_retries=2)
+            with self.assertRaises(RateLimitError):
+                client.call("groups.search", q="x")
+
+            # Initial call + 2 retries = 3 total.
+            self.assertEqual(session.post.call_count, 3)
+
+    def test_auth_error_not_retried(self):
+        from content_parser.plugins.vk.client import VKClient
+
+        auth_payload = {"error": {"error_code": 5, "error_msg": "Auth failed"}}
+
+        with patch("content_parser.plugins.vk.client.requests.Session") as MockSession, \
+             patch.object(VKClient, "_sleep", staticmethod(lambda s: None)):
+            session = MagicMock()
+            session.post.return_value = self._mock_response(auth_payload)
+            MockSession.return_value = session
+
+            client = VKClient("x")
+            with self.assertRaises(AuthError):
+                client.call("groups.search", q="x")
+
+            # Only one call — no retries on AuthError.
+            self.assertEqual(session.post.call_count, 1)
+
+
+class CommentPaginationTest(unittest.TestCase):
+    """_fetch_comments correctness: cap respected, short-circuit on count."""
+
+    def setUp(self):
+        self.p = VKPlugin()
+
+    def _make_client(self, responses: list[dict]) -> MagicMock:
+        client = MagicMock()
+        client.call.side_effect = responses
+        return client
+
+    @staticmethod
+    def _comment(cid, replies=None):
+        c = {
+            "id": cid,
+            "from_id": 100 + cid,
+            "date": 1_700_000_000,
+            "text": f"comment {cid}",
+            "likes": {"count": 0},
+        }
+        if replies:
+            c["thread"] = {"items": replies}
+        return c
+
+    def test_top_level_cap_enforced_exactly(self):
+        # 200 top-level comments available, max=50. Should yield exactly 50.
+        all_comments = [self._comment(i) for i in range(200)]
+        responses = [
+            {"items": all_comments[:100], "profiles": [], "groups": [], "count": 200},
+            {"items": all_comments[100:200], "profiles": [], "groups": [], "count": 200},
+        ]
+        client = self._make_client(responses)
+        out = self.p._fetch_comments(
+            client, owner_id=-1, post_id=1, max_comments=50, depth="top_level"
+        )
+        self.assertEqual(len(out), 50)
+        # We only need one page (50 ≤ 100 page size)
+        self.assertEqual(client.call.call_count, 1)
+
+    def test_depth_all_does_not_overshoot_cap(self):
+        # 1 top-level with 200 replies, max=10 → exactly 10, not 11.
+        replies = [self._comment(1000 + i) for i in range(200)]
+        top = [self._comment(1, replies=replies)]
+        responses = [
+            {"items": top, "profiles": [], "groups": [], "count": 1},
+        ]
+        client = self._make_client(responses)
+        out = self.p._fetch_comments(
+            client, owner_id=-1, post_id=1, max_comments=10, depth="all"
+        )
+        self.assertEqual(len(out), 10)
+        # First should be the top-level; rest replies with parent_id=1
+        self.assertIsNone(out[0].parent_id)
+        for c in out[1:]:
+            self.assertEqual(c.parent_id, "1")
+
+    def test_pagination_short_circuit_via_count(self):
+        # Page 1: 100 items, count=100 → no second page.
+        all_comments = [self._comment(i) for i in range(100)]
+        responses = [
+            {"items": all_comments, "profiles": [], "groups": [], "count": 100},
+        ]
+        client = self._make_client(responses)
+        out = self.p._fetch_comments(
+            client, owner_id=-1, post_id=1, max_comments=500, depth="top_level"
+        )
+        self.assertEqual(len(out), 100)
+        # Critically: only ONE call, no useless extra request.
+        self.assertEqual(client.call.call_count, 1)
+
+    def test_pagination_continues_when_count_higher_than_page(self):
+        page1 = [self._comment(i) for i in range(100)]
+        page2 = [self._comment(100 + i) for i in range(50)]
+        responses = [
+            {"items": page1, "profiles": [], "groups": [], "count": 150},
+            {"items": page2, "profiles": [], "groups": [], "count": 150},
+        ]
+        client = self._make_client(responses)
+        out = self.p._fetch_comments(
+            client, owner_id=-1, post_id=1, max_comments=500, depth="top_level"
+        )
+        self.assertEqual(len(out), 150)
+        self.assertEqual(client.call.call_count, 2)
+
+
+class AdapterDefensiveTest(unittest.TestCase):
+    def test_post_to_item_raises_on_missing_owner_id(self):
+        from content_parser.plugins.vk.adapter import post_to_item
+        with self.assertRaises(ValueError):
+            post_to_item({"id": 1})
+
+    def test_post_to_item_raises_on_missing_id(self):
+        from content_parser.plugins.vk.adapter import post_to_item
+        with self.assertRaises(ValueError):
+            post_to_item({"owner_id": -1})
+
+
 class ClientErrorMappingTest(unittest.TestCase):
     """VKClient maps known error_code → AuthError / RateLimitError / PluginError."""
 
@@ -170,13 +338,22 @@ class ClientErrorMappingTest(unittest.TestCase):
         m.json.return_value = payload
         return m
 
+    def _patched_session(self, response):
+        """Build a context manager that patches requests.Session in the client."""
+        session = MagicMock()
+        session.post.return_value = response
+        return patch(
+            "content_parser.plugins.vk.client.requests.Session",
+            return_value=session,
+        ), session
+
     def test_auth_error(self):
         from content_parser.plugins.vk.client import VKClient
 
-        with patch("content_parser.plugins.vk.client.requests.post") as rp:
-            rp.return_value = self._mock_response({
-                "error": {"error_code": 5, "error_msg": "User authorization failed"}
-            })
+        ctx, session = self._patched_session(self._mock_response({
+            "error": {"error_code": 5, "error_msg": "User authorization failed"}
+        }))
+        with ctx, patch.object(VKClient, "_sleep", staticmethod(lambda s: None)):
             client = VKClient("bad_token")
             with self.assertRaises(AuthError) as cm:
                 client.call("groups.search", q="x")
@@ -185,31 +362,31 @@ class ClientErrorMappingTest(unittest.TestCase):
     def test_rate_limit(self):
         from content_parser.plugins.vk.client import VKClient
 
-        with patch("content_parser.plugins.vk.client.requests.post") as rp:
-            rp.return_value = self._mock_response({
-                "error": {"error_code": 6, "error_msg": "Too many requests per second"}
-            })
+        ctx, session = self._patched_session(self._mock_response({
+            "error": {"error_code": 6, "error_msg": "Too many requests per second"}
+        }))
+        with ctx, patch.object(VKClient, "_sleep", staticmethod(lambda s: None)):
             with self.assertRaises(RateLimitError):
-                VKClient("x").call("groups.search", q="x")
+                VKClient("x", max_rate_limit_retries=0).call("groups.search", q="x")
 
     def test_other_error(self):
         from content_parser.plugins.vk.client import VKClient
 
-        with patch("content_parser.plugins.vk.client.requests.post") as rp:
-            rp.return_value = self._mock_response({
-                "error": {"error_code": 100, "error_msg": "Param missing"}
-            })
+        ctx, session = self._patched_session(self._mock_response({
+            "error": {"error_code": 100, "error_msg": "Param missing"}
+        }))
+        with ctx, patch.object(VKClient, "_sleep", staticmethod(lambda s: None)):
             with self.assertRaises(PluginError):
                 VKClient("x").call("groups.search", q="x")
 
     def test_token_in_body_not_query(self):
         from content_parser.plugins.vk.client import VKClient
 
-        with patch("content_parser.plugins.vk.client.requests.post") as rp:
-            rp.return_value = self._mock_response({"response": {"items": []}})
+        ctx, session = self._patched_session(self._mock_response({"response": {"items": []}}))
+        with ctx:
             VKClient("MY_SECRET_TOKEN").call("groups.search", q="x", count=10)
 
-            args, kwargs = rp.call_args
+            args, kwargs = session.post.call_args
             # token must not appear in URL
             self.assertNotIn("MY_SECRET_TOKEN", args[0])
             self.assertNotIn("MY_SECRET_TOKEN", str(kwargs.get("params") or {}))

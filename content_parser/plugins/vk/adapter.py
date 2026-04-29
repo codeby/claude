@@ -52,8 +52,12 @@ def post_to_item(
     profiles_by_id = profiles_by_id or {}
     groups_by_id = groups_by_id or {}
 
-    owner_id = int(post.get("owner_id", 0))
-    post_id = int(post.get("id", 0))
+    if post.get("owner_id") is None or post.get("id") is None:
+        raise ValueError(
+            f"Malformed VK post: missing owner_id or id (got keys {sorted(post.keys())[:8]})"
+        )
+    owner_id = int(post["owner_id"])
+    post_id = int(post["id"])
     item_id = f"{owner_id}_{post_id}"
 
     if owner_label is None:

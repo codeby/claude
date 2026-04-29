@@ -5,6 +5,7 @@ leak into nginx access logs or Streamlit's URL bar history.
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import requests
@@ -22,18 +23,48 @@ _RATE_LIMIT_CODES = {6, 9, 29}          # too many requests / per-second flood
 
 
 class VKClient:
-    def __init__(self, token: str, timeout: int = 60, version: str = VK_API_VERSION):
+    def __init__(
+        self,
+        token: str,
+        timeout: int = 60,
+        version: str = VK_API_VERSION,
+        max_rate_limit_retries: int = 3,
+    ):
         if not token:
             raise ValueError("VK access token is required")
         self.token = token
         self.timeout = timeout
         self.version = version
+        self.max_rate_limit_retries = max_rate_limit_retries
+        # Reuse one connection across requests to avoid TLS handshake per call.
+        self.session = requests.Session()
+
+    @staticmethod
+    def _sleep(seconds: float) -> None:
+        time.sleep(seconds)
 
     def call(self, method: str, **params: Any) -> Any:
-        """Call a VK API method and return the unwrapped 'response' field.
+        """Call a VK API method with retries on rate-limit errors.
 
-        Raises AuthError, RateLimitError, or PluginError on VK-level errors.
+        Returns the unwrapped 'response' field. Raises AuthError on bad
+        token, RateLimitError after exhausting retries, PluginError on
+        other API or transport errors.
         """
+        delay = 1.0
+        last_rate_limit: RateLimitError | None = None
+        for attempt in range(self.max_rate_limit_retries + 1):
+            try:
+                return self._call_once(method, params)
+            except RateLimitError as e:
+                last_rate_limit = e
+                if attempt >= self.max_rate_limit_retries:
+                    raise
+                self._sleep(delay)
+                delay *= 2
+        # Defensive — only reachable if max_rate_limit_retries < 0.
+        raise last_rate_limit  # type: ignore[misc]
+
+    def _call_once(self, method: str, params: dict[str, Any]) -> Any:
         body = {"access_token": self.token, "v": self.version}
         for k, v in params.items():
             if v is None:
@@ -47,7 +78,7 @@ class VKClient:
 
         url = VK_API_URL.format(method=method)
         try:
-            r = requests.post(url, data=body, timeout=self.timeout)
+            r = self.session.post(url, data=body, timeout=self.timeout)
         except requests.RequestException as e:
             raise PluginError(f"Network error calling VK {method}: {e}") from e
 

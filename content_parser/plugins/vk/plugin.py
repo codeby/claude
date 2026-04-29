@@ -232,23 +232,10 @@ class VKPlugin(SourcePlugin):
 
         elif kind == "post":
             posts_resp = client.call("wall.getById", posts=value, extended=1)
-            if isinstance(posts_resp, dict):
-                items = posts_resp.get("items", [])
-                for p in posts_resp.get("profiles", []) or []:
-                    profiles_cache[int(p["id"])] = p
-                for g in posts_resp.get("groups", []) or []:
-                    groups_cache[int(g["id"])] = g
-            else:
-                items = posts_resp or []
+            items = self._extract_extended(posts_resp, profiles_cache, groups_cache)
+            # owner_label=None — adapter resolves via shared profile/group caches.
             for post in items:
-                owner_id = int(post.get("owner_id", 0))
-                if owner_id < 0:
-                    g = groups_cache.get(-owner_id) or {}
-                    label = g.get("name")
-                else:
-                    p = profiles_cache.get(owner_id) or {}
-                    label = ((p.get("first_name") or "") + " " + (p.get("last_name") or "")).strip() or None
-                post_jobs.append((post, label))
+                post_jobs.append((post, None))
 
         else:
             raise PluginError(f"Unknown VK input kind: {kind!r}")
@@ -264,16 +251,30 @@ class VKPlugin(SourcePlugin):
         groups_cache: dict[int, dict],
     ) -> None:
         resp = client.call("wall.get", owner_id=owner_id, count=max_posts, extended=1)
-        if isinstance(resp, dict):
-            for p in resp.get("profiles", []) or []:
-                profiles_cache[int(p["id"])] = p
-            for g in resp.get("groups", []) or []:
-                groups_cache[int(g["id"])] = g
-            items = resp.get("items", [])
-        else:
-            items = resp or []
+        items = self._extract_extended(resp, profiles_cache, groups_cache)
         for post in items:
             post_jobs.append((post, owner_label))
+
+    @staticmethod
+    def _extract_extended(
+        resp: Any,
+        profiles_cache: dict[int, dict],
+        groups_cache: dict[int, dict],
+    ) -> list[dict]:
+        """Pull items from a VK extended=1 response and merge profiles/groups into caches."""
+        if not isinstance(resp, dict):
+            return resp or []
+        for p in resp.get("profiles") or []:
+            try:
+                profiles_cache[int(p["id"])] = p
+            except (KeyError, TypeError, ValueError):
+                continue
+        for g in resp.get("groups") or []:
+            try:
+                groups_cache[int(g["id"])] = g
+            except (KeyError, TypeError, ValueError):
+                continue
+        return resp.get("items", [])
 
     # ------------------------------------------------------------------
     # Comments
@@ -287,7 +288,13 @@ class VKPlugin(SourcePlugin):
         max_comments: int,
         depth: str,
     ) -> list:
-        # VK caps `count` at 100 per request — paginate if needed.
+        """Paginate wall.getComments respecting `max_comments` exactly.
+
+        VK caps `count` at 100 per request. We check the cap *before* every
+        append (top-level or reply) so the result is always ≤ max_comments,
+        and we use the response's `count` field to short-circuit pagination
+        instead of doing one extra round-trip just to confirm the end.
+        """
         out: list = []
         offset = 0
         page = min(100, max_comments)
@@ -310,28 +317,40 @@ class VKPlugin(SourcePlugin):
             items = resp.get("items", [])
             profiles = index_by_id(resp.get("profiles") or [])
             groups = index_by_id(resp.get("groups") or [])
+            total = int(resp.get("count", 0) or 0)
 
             for c in items:
-                out.append(comment_to_core(c, parent_id=None, profiles_by_id=profiles, groups_by_id=groups))
                 if len(out) >= max_comments:
                     break
+                out.append(
+                    comment_to_core(
+                        c, parent_id=None, profiles_by_id=profiles, groups_by_id=groups
+                    )
+                )
                 if depth == "all":
                     thread = c.get("thread") or {}
+                    parent_id = str(c.get("id", "") or "")
                     for reply in thread.get("items", []) or []:
+                        if len(out) >= max_comments:
+                            break
                         out.append(
                             comment_to_core(
                                 reply,
-                                parent_id=str(c.get("id", "") or ""),
+                                parent_id=parent_id,
                                 profiles_by_id=profiles,
                                 groups_by_id=groups,
                             )
                         )
-                        if len(out) >= max_comments:
-                            break
 
-            if not items or len(items) < page:
+            if not items:
                 break
             offset += len(items)
+            # Short-circuit: VK told us the total — stop if we've consumed it
+            # or the page came back smaller than requested (no more data).
+            if total and offset >= total:
+                break
+            if len(items) < page:
+                break
 
         return out
 
