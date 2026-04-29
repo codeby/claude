@@ -45,10 +45,15 @@ def all_plugins() -> list[SourcePlugin]:
         from ..plugins.reddit.plugin import RedditPlugin
         return RedditPlugin()
 
+    def _load_vk():
+        from ..plugins.vk.plugin import VKPlugin
+        return VKPlugin()
+
     for loader, label in [
         (_load_youtube, "youtube"),
         (_load_instagram, "instagram"),
         (_load_reddit, "reddit"),
+        (_load_vk, "vk"),
     ]:
         p = _try_load(loader, label)
         if p is not None:
