@@ -1,0 +1,161 @@
+"""Source-agnostic writers: Item → JSON / Markdown / CSV / index.
+
+Filenames use `<source>_<item_id>_<title>` so multiple sources coexist in one folder.
+"""
+from __future__ import annotations
+
+import csv
+import json
+import re
+from dataclasses import asdict
+from pathlib import Path
+
+from .schema import Item
+
+
+def _safe_filename(name: str, max_length: int = 80) -> str:
+    cleaned = re.sub(r"[^\w\s-]", "", name, flags=re.UNICODE).strip()
+    cleaned = re.sub(r"\s+", "_", cleaned)
+    return cleaned[:max_length] or "item"
+
+
+def _format_seconds(seconds: float) -> str:
+    total = int(seconds)
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+def _file_stem(item: Item) -> str:
+    return f"{item.source}_{item.item_id}_{_safe_filename(item.title or '')}"
+
+
+def write_item_json(item: Item, out_dir: Path) -> Path:
+    path = out_dir / f"{_file_stem(item)}.json"
+    path.write_text(json.dumps(asdict(item), ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def write_item_markdown(item: Item, out_dir: Path) -> Path:
+    path = out_dir / f"{_file_stem(item)}.md"
+    lines: list[str] = []
+
+    title = item.title or item.item_id
+    lines.append(f"# {title}")
+    lines.append("")
+    lines.append(f"- **Source:** {item.source}")
+    lines.append(f"- **Author:** {item.author or '—'}")
+    lines.append(f"- **URL:** {item.url}")
+    lines.append(f"- **Published:** {item.published_at or '—'}")
+    if item.media:
+        media_pairs = ", ".join(f"{k}={v}" for k, v in item.media.items() if v is not None)
+        if media_pairs:
+            lines.append(f"- **Metrics:** {media_pairs}")
+    lines.append("")
+
+    if item.text:
+        lines.append("## Text")
+        lines.append("")
+        lines.append(item.text.strip())
+        lines.append("")
+
+    lines.append("## Transcript")
+    lines.append("")
+    t = item.transcript
+    if t and t.segments:
+        kind = "auto" if t.is_generated else "manual"
+        lines.append(f"_Language: {t.language} ({kind})_")
+        lines.append("")
+        for seg in t.segments:
+            ts = _format_seconds(seg.get("start", 0))
+            text = (seg.get("text") or "").replace("\n", " ").strip()
+            if text:
+                lines.append(f"- `[{ts}]` {text}")
+        lines.append("")
+    elif t and t.error:
+        lines.append(f"_Transcript error: {t.error}_")
+        lines.append("")
+    else:
+        lines.append("_No transcript available._")
+        lines.append("")
+
+    lines.append(f"## Comments ({len(item.comments)})")
+    lines.append("")
+    if not item.comments:
+        lines.append("_No comments._")
+        lines.append("")
+    else:
+        by_parent: dict[str | None, list] = {}
+        for c in item.comments:
+            by_parent.setdefault(c.parent_id, []).append(c)
+
+        for top in by_parent.get(None, []):
+            lines.append(
+                f"### {top.author or '—'} "
+                f"_({top.published_at or '—'}, ♥ {top.like_count})_"
+            )
+            lines.append("")
+            lines.append((top.text or "").strip())
+            lines.append("")
+            for reply in by_parent.get(top.comment_id, []):
+                lines.append(
+                    f"> **{reply.author or '—'}** "
+                    f"_({reply.published_at or '—'}, ♥ {reply.like_count})_"
+                )
+                lines.append("> ")
+                for ln in (reply.text or "").strip().splitlines():
+                    lines.append(f"> {ln}")
+                lines.append("")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def write_summary_csv(items: list[Item], out_dir: Path) -> Path:
+    path = out_dir / "summary.csv"
+    metric_keys: set[str] = set()
+    for it in items:
+        metric_keys.update(it.media.keys())
+    metric_keys_sorted = sorted(metric_keys)
+
+    fields = [
+        "source", "item_id", "title", "author", "url",
+        "published_at", "comments_fetched",
+        "transcript_language", "transcript_is_generated",
+    ] + metric_keys_sorted
+
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        for it in items:
+            row: dict = {
+                "source": it.source,
+                "item_id": it.item_id,
+                "title": it.title,
+                "author": it.author,
+                "url": it.url,
+                "published_at": it.published_at,
+                "comments_fetched": len(it.comments),
+                "transcript_language": it.transcript.language if it.transcript else None,
+                "transcript_is_generated": it.transcript.is_generated if it.transcript else None,
+            }
+            for k in metric_keys_sorted:
+                row[k] = it.media.get(k)
+            writer.writerow(row)
+    return path
+
+
+def write_index_markdown(items: list[Item], out_dir: Path) -> Path:
+    path = out_dir / "index.md"
+    lines = [f"# Results ({len(items)} item(s))", ""]
+    for it in items:
+        title = it.title or it.item_id
+        fname = f"{_file_stem(it)}.md"
+        comments = len(it.comments)
+        has_t = bool(it.transcript and it.transcript.segments)
+        lines.append(
+            f"- [{title}]({fname}) — `{it.source}`, "
+            f"{comments} comment(s), transcript: {'yes' if has_t else 'no'}"
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
