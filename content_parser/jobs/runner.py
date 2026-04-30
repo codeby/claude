@@ -1,6 +1,7 @@
 """Run a saved job: merge inline + Sheet inputs, call core.runner.run."""
 from __future__ import annotations
 
+import json
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -99,12 +100,12 @@ def run_job_obj(
     try:
         inputs = _resolve_inputs(job, secrets)
     except Exception as e:
-        _record_failure(job, e, out_dir=out_dir)
+        _record_failure(job, e, out_dir=out_dir, secrets=secrets)
         raise
 
     if not inputs:
         msg = f"Job {job.name!r} has no resolved inputs (inline empty, Sheets returned nothing)."
-        _record_failure(job, PluginError(msg), out_dir=out_dir)
+        _record_failure(job, PluginError(msg), out_dir=out_dir, secrets=secrets)
         raise PluginError(msg)
 
     plugin = get_plugin(job.source)
@@ -120,7 +121,7 @@ def run_job_obj(
             progress=progress,
         )
     except Exception as e:
-        _record_failure(job, e, out_dir=out_dir)
+        _record_failure(job, e, out_dir=out_dir, secrets=secrets)
         raise
 
     _record_success(job, out_dir, result)
@@ -142,19 +143,59 @@ def _record_success(job: Job, out_dir: Path, result: RunResult) -> None:
         f"items: {len(result.items)}\n",
         encoding="utf-8",
     )
+    _write_status(job, out_dir, status="success", items=len(result.items))
 
 
-def _record_failure(job: Job, exc: Exception, *, out_dir: Path) -> None:
-    if job.notify_on_failure == "none":
-        return
+def _write_status(
+    job: Job,
+    out_dir: Path,
+    *,
+    status: str,
+    items: int = 0,
+    error: str | None = None,
+) -> None:
+    """Single canonical status file consumed by monitoring / UI.
+
+    Lives in <output_dir>/.last_status.json and is overwritten on every
+    run so a watcher only needs to mtime + parse one path.
+    """
+    payload = {
+        "job": job.name,
+        "source": job.source,
+        "status": status,         # "success" | "failure"
+        "finished_at": datetime.now().isoformat(),
+        "items": items,
+        "error": error,
+    }
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "last_error.txt").write_text(
-            f"job: {job.name}\n"
-            f"failed_at: {datetime.now().isoformat()}\n"
-            f"error: {type(exc).__name__}: {exc}\n\n"
-            f"{traceback.format_exc()}",
-            encoding="utf-8",
-        )
+        path = out_dir / ".last_status.json"
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
     except OSError:
         pass
+
+
+def _record_failure(job: Job, exc: Exception, *, out_dir: Path, secrets: dict[str, str] | None = None) -> None:
+    if job.notify_on_failure == "none":
+        return
+    text = (
+        f"job: {job.name}\n"
+        f"failed_at: {datetime.now().isoformat()}\n"
+        f"error: {type(exc).__name__}: {exc}\n\n"
+        f"{traceback.format_exc()}"
+    )
+    # Tracebacks may include URLs / response bodies that embed tokens.
+    # Replace every secret value we know about with [REDACTED] before the
+    # file lands on disk where logs can be shared in support tickets.
+    for value in (secrets or {}).values():
+        if isinstance(value, str) and len(value) >= 8 and value in text:
+            text = text.replace(value, "[REDACTED]")
+
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "last_error.txt").write_text(text, encoding="utf-8")
+    except OSError:
+        pass
+    _write_status(job, out_dir, status="failure", error=f"{type(exc).__name__}: {exc}")

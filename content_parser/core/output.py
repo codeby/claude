@@ -134,6 +134,22 @@ def write_item_markdown(item: Item, out_dir: Path) -> Path:
     return path
 
 
+_CSV_INJECTION_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value):
+    """Defuse Excel-style formula injection in CSV cells.
+
+    Excel/Sheets/LibreOffice treat any cell starting with =, +, -, @ as a
+    formula (incl. =cmd|'/c calc'!A1). User-controlled fields like title
+    and author can carry such payloads from third-party APIs. Prefixing
+    with a single quote keeps the value visible but neutralizes execution.
+    """
+    if isinstance(value, str) and value and value[0] in _CSV_INJECTION_PREFIXES:
+        return "'" + value
+    return value
+
+
 def write_summary_csv(items: list[Item], out_dir: Path) -> Path:
     path = out_dir / "summary.csv"
     metric_keys: set[str] = set()
@@ -152,18 +168,18 @@ def write_summary_csv(items: list[Item], out_dir: Path) -> Path:
         writer.writeheader()
         for it in items:
             row: dict = {
-                "source": it.source,
-                "item_id": it.item_id,
-                "title": it.title,
-                "author": it.author,
-                "url": it.url,
-                "published_at": it.published_at,
+                "source": _csv_safe(it.source),
+                "item_id": _csv_safe(it.item_id),
+                "title": _csv_safe(it.title),
+                "author": _csv_safe(it.author),
+                "url": _csv_safe(it.url),
+                "published_at": _csv_safe(it.published_at),
                 "comments_fetched": len(it.comments),
-                "transcript_language": it.transcript.language if it.transcript else None,
+                "transcript_language": _csv_safe(it.transcript.language if it.transcript else None),
                 "transcript_is_generated": it.transcript.is_generated if it.transcript else None,
             }
             for k in metric_keys_sorted:
-                row[k] = it.media.get(k)
+                row[k] = _csv_safe(it.media.get(k))
             writer.writerow(row)
     return path
 

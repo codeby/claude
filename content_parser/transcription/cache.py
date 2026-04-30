@@ -34,9 +34,17 @@ def get(source: str, item_id: str) -> dict | None:
 
 
 def put(source: str, item_id: str, transcript_dict: dict) -> Path:
+    """Write the transcript atomically — to a .tmp sibling, then rename.
+
+    Without this, a crash mid-write (disk full, SIGTERM) would leave a
+    truncated JSON that future `get()` calls catch as ValueError and
+    treat as cache miss — but the corrupt file lingers on disk.
+    """
     p = _cache_path(source, item_id)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(transcript_dict, ensure_ascii=False), encoding="utf-8")
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(transcript_dict, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(p)  # atomic on POSIX; near-atomic on Windows
     return p
 
 

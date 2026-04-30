@@ -173,6 +173,45 @@ class RunJobTest(unittest.TestCase):
         self.assertIn("boom", text)
         self.assertIn("RuntimeError", text)
 
+    def test_record_failure_redacts_known_secret_values(self):
+        # Secrets passed in get scrubbed from traceback / error message.
+        job = self._job()
+        out_dir = self.tmp / "x"
+        try:
+            raise RuntimeError("call to https://api.example/?token=SECRETXYZ failed")
+        except RuntimeError as e:
+            runner_module._record_failure(
+                job, e, out_dir=out_dir,
+                secrets={"SOME_TOKEN": "SECRETXYZ", "OTHER": "shortish"},
+            )
+        text = (out_dir / "last_error.txt").read_text()
+        self.assertNotIn("SECRETXYZ", text)
+        self.assertIn("[REDACTED]", text)
+
+    def test_record_failure_writes_status_file(self):
+        job = self._job()
+        out_dir = self.tmp / "y"
+        try:
+            raise ValueError("boom")
+        except ValueError as e:
+            runner_module._record_failure(job, e, out_dir=out_dir)
+        import json
+        status = json.loads((out_dir / ".last_status.json").read_text())
+        self.assertEqual(status["status"], "failure")
+        self.assertEqual(status["job"], "test-job")
+        self.assertIn("ValueError", status["error"])
+
+    def test_record_success_writes_status_file(self):
+        from content_parser.core.runner import RunResult
+        job = self._job()
+        out_dir = self.tmp / "z"
+        out_dir.mkdir(parents=True)
+        runner_module._record_success(job, out_dir, RunResult(out_dir=out_dir, items=[]))
+        import json
+        status = json.loads((out_dir / ".last_status.json").read_text())
+        self.assertEqual(status["status"], "success")
+        self.assertEqual(status["items"], 0)
+
     def test_notify_none_skips_error_marker(self):
         job = self._job(notify_on_failure="none")
         fake_plugin = MagicMock()

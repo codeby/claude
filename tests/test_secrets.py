@@ -64,6 +64,22 @@ class TomlUpsertTest(unittest.TestCase):
         s._remove_from_secrets_toml("KEY")
         self.assertFalse(s.SECRETS_PATH.exists())
 
+    def test_streamlit_cloud_skip_writes(self):
+        from unittest.mock import patch
+        # On Streamlit Cloud, secrets.toml is read-only; we must NOT touch it.
+        with patch.dict("os.environ", {"STREAMLIT_RUNTIME": "cloud"}):
+            self.assertTrue(s._is_streamlit_cloud())
+            s._upsert_secrets_toml("KEY", "value")
+            # File should not have been created
+            self.assertFalse(s.SECRETS_PATH.exists())
+
+    def test_local_environment_writes_normally(self):
+        from unittest.mock import patch
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertFalse(s._is_streamlit_cloud())
+            s._upsert_secrets_toml("KEY", "value")
+            self.assertTrue(s.SECRETS_PATH.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

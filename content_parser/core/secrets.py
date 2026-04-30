@@ -71,7 +71,25 @@ def _toml_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _is_streamlit_cloud() -> bool:
+    """Best-effort detection for Streamlit Cloud, where .streamlit/secrets.toml
+    is read-only and writing it would either fail or be silently ignored."""
+    if os.environ.get("STREAMLIT_RUNTIME") == "cloud":
+        return True
+    if os.environ.get("STREAMLIT_SHARING") in ("1", "true", "True"):
+        return True
+    # Streamlit Cloud containers have hostnames like 'streamlit-app-xyz'.
+    hostname = os.environ.get("HOSTNAME", "")
+    return hostname.startswith("streamlit-")
+
+
 def _upsert_secrets_toml(key: str, value: str) -> None:
+    if _is_streamlit_cloud():
+        # secrets.toml is managed via Settings → Secrets in the Cloud UI;
+        # filesystem writes are pointless and may raise. Local config.json
+        # write in save_secret() above already persisted the value for this
+        # session — Cloud users have to mirror it via the dashboard.
+        return
     SECRETS_PATH.parent.mkdir(parents=True, exist_ok=True)
     line = f'{key} = "{_toml_escape(value)}"'
     if SECRETS_PATH.exists():

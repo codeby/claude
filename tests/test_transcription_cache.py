@@ -47,6 +47,18 @@ class CacheTest(unittest.TestCase):
         self.assertEqual(n, 2)
         self.assertIsNone(cache_mod.get("instagram", "a"))
 
+    def test_atomic_write_no_tmp_left_after_success(self):
+        cache_mod.put("instagram", "x", {"text": "ok"})
+        # No .tmp sibling should remain
+        tmps = list(self.tmp.glob("*.tmp"))
+        self.assertEqual(tmps, [])
+
+    def test_existing_value_replaced_atomically(self):
+        cache_mod.put("instagram", "x", {"text": "first"})
+        cache_mod.put("instagram", "x", {"text": "second"})
+        loaded = cache_mod.get("instagram", "x")
+        self.assertEqual(loaded["text"], "second")
+
 
 if __name__ == "__main__":
     unittest.main()

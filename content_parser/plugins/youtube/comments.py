@@ -58,15 +58,25 @@ def fetch_comments(
                 return comments
 
             if include_replies:
+                # Bound the reply pull by remaining cap so a single popular
+                # top-level comment with hundreds of replies doesn't burn quota
+                # only for the slice [:max_comments] to throw most of them away.
+                remaining = (max_comments - len(comments)) if max_comments else None
                 reply_count = item["snippet"].get("totalReplyCount", 0)
                 inline_replies = item.get("replies", {}).get("comments", [])
                 if reply_count and len(inline_replies) < reply_count:
-                    comments.extend(_fetch_all_replies(youtube, top_id))
+                    comments.extend(
+                        _fetch_all_replies(youtube, top_id, max_replies=remaining)
+                    )
                 else:
                     for reply in inline_replies:
+                        if remaining is not None and remaining <= 0:
+                            break
                         comments.append(
                             _format_comment(reply["snippet"], reply["id"], parent_id=top_id)
                         )
+                        if remaining is not None:
+                            remaining -= 1
                 if max_comments and len(comments) >= max_comments:
                     return comments[:max_comments]
 
@@ -77,16 +87,26 @@ def fetch_comments(
     return comments
 
 
-def _fetch_all_replies(youtube: Resource, parent_id: str) -> list[dict]:
+def _fetch_all_replies(
+    youtube: Resource,
+    parent_id: str,
+    *,
+    max_replies: int | None = None,
+) -> list[dict]:
     replies: list[dict] = []
     page_token: str | None = None
     while True:
+        if max_replies is not None and len(replies) >= max_replies:
+            return replies[:max_replies]
+        page_size = 100 if max_replies is None else min(100, max_replies - len(replies))
+        if page_size <= 0:
+            return replies
         response = (
             youtube.comments()
             .list(
                 part="snippet",
                 parentId=parent_id,
-                maxResults=100,
+                maxResults=page_size,
                 pageToken=page_token,
                 textFormat="plainText",
             )
@@ -94,6 +114,8 @@ def _fetch_all_replies(youtube: Resource, parent_id: str) -> list[dict]:
         )
         for item in response.get("items", []):
             replies.append(_format_comment(item["snippet"], item["id"], parent_id=parent_id))
+            if max_replies is not None and len(replies) >= max_replies:
+                return replies[:max_replies]
         page_token = response.get("nextPageToken")
         if not page_token:
             break

@@ -7,12 +7,68 @@ import unittest
 from pathlib import Path
 
 from content_parser.core.output import (
+    _csv_safe,
     _file_stem,
     _safe_filename,
     write_item_json,
     write_item_markdown,
+    write_summary_csv,
 )
 from content_parser.core.schema import Item
+
+
+class CsvInjectionTest(unittest.TestCase):
+    """Excel/Sheets execute cells starting with =/+/-/@ as formulas."""
+
+    def test_equals_prefix_neutralized(self):
+        self.assertEqual(_csv_safe("=cmd|'/c calc'!A1"), "'=cmd|'/c calc'!A1")
+
+    def test_plus_prefix_neutralized(self):
+        self.assertEqual(_csv_safe("+1+1"), "'+1+1")
+
+    def test_minus_prefix_neutralized(self):
+        self.assertEqual(_csv_safe("-2+3"), "'-2+3")
+
+    def test_at_prefix_neutralized(self):
+        self.assertEqual(_csv_safe("@SUM(A1:A10)"), "'@SUM(A1:A10)")
+
+    def test_tab_and_cr_prefixes_neutralized(self):
+        self.assertEqual(_csv_safe("\t=evil"), "'\t=evil")
+        self.assertEqual(_csv_safe("\r=evil"), "'\r=evil")
+
+    def test_safe_string_unchanged(self):
+        self.assertEqual(_csv_safe("normal title"), "normal title")
+        self.assertEqual(_csv_safe("123 abc"), "123 abc")
+
+    def test_none_passthrough(self):
+        self.assertIsNone(_csv_safe(None))
+
+    def test_non_string_passthrough(self):
+        self.assertEqual(_csv_safe(42), 42)
+        self.assertEqual(_csv_safe(True), True)
+
+    def test_empty_string_unchanged(self):
+        self.assertEqual(_csv_safe(""), "")
+
+    def test_summary_csv_escapes_malicious_title(self):
+        import csv as _csv
+        import shutil
+        import tempfile
+        tmp = Path(tempfile.mkdtemp(prefix="cp_csv_"))
+        try:
+            item = Item(
+                source="reddit", item_id="abc", url="https://x",
+                title="=cmd|'/c calc'!A1",
+                author="@evil",
+            )
+            path = write_summary_csv([item], tmp)
+            with path.open(encoding="utf-8") as f:
+                reader = _csv.DictReader(f)
+                row = next(reader)
+            self.assertTrue(row["title"].startswith("'="))
+            self.assertTrue(row["author"].startswith("'@"))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 class SafeFilenameTest(unittest.TestCase):
